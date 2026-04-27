@@ -1,0 +1,57 @@
+# cfgs/default.yaml
+task: "simple_spread"  # MPE Cooperative Navigation
+modality: "state"
+exp_name: "ma_tdmpc_baseline"
+seed: 42
+device: "cuda"
+
+# Multi-Agent setup
+num_agents: 3
+obs_shape: [18]  # MPE simple_spread default obs dim for N=3
+action_dim: 5    # Discrete/Continuous mixed in MPE, assume continuous 5
+
+# Training
+train_steps: 500000
+episode_length: 25
+seed_steps: 5000
+update_freq: 2
+action_repeat: 1
+eval_freq: 10000
+eval_episodes: 10
+
+# Buffer
+max_buffer_size: 20000
+batch_size: 512
+per_alpha: 0.6
+per_beta: 0.4
+
+# Architecture (MACLM & Mixing)
+latent_dim: 128
+enc_dim: 256
+mlp_dim: 256
+n_com_layers: 2
+n_heads: 4
+
+# TD-MPC
+horizon: 5
+iterations: 6
+num_samples: 512
+mixture_coef: 0.05
+num_elites: 64
+temperature: 0.5
+momentum: 0.1
+min_std: 0.05
+std_schedule: "linear(0.5, 0.05, 25000)"
+horizon_schedule: "linear(1, 5, 25000)"
+
+# Optimization
+lr: 0.001
+grad_clip_norm: 10.0
+tau: 0.99 # Target EMA
+discount: 0.95 # Gamma
+rho: 0.5 # Temporal decay factor
+
+# Loss Coefs
+consistency_coef: 2.0
+reward_coef: 0.5
+value_coef: 0.1
