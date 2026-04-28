@@ -50,88 +50,139 @@ class MATDMPC:
 
     @torch.no_grad()
     def plan(self, obs, eval_mode=False, step=None, t0=True):
-        obs = torch.tensor(obs, dtype=torch.float32, device=self.device).unsqueeze(0) # [1, N, obs_dim]
+        obs = torch.tensor(obs, dtype=torch.float32, device=self.device).unsqueeze(0)  # [1, N, obs_dim]
         horizon = int(min(self.cfg.horizon, h.linear_schedule(self.cfg.horizon_schedule, step)))
-        
+
         if step < self.cfg.seed_steps and not eval_mode:
             return torch.empty(self.N, self.cfg.action_dim, device=self.device).uniform_(-1, 1)
 
-        # Encode observation
-        e0 = self.model.encode(obs) # [1, N, latent]
+        e0 = self.model.encode(obs)  # [1, N, latent]
 
-        # Shift prev mean to estimate other agents' futures
+        # --- prev_mean の更新 ---
         if t0:
             self._prev_mean.zero_()
         else:
             self._prev_mean[:, :-1] = self._prev_mean[:, 1:].clone()
-            # Fill last step with policy prediction (rough estimate)
             z_est = self.model.communicate(e0, self._prev_mean[:, 0].unsqueeze(0))
             self._prev_mean[:, -1] = self.model.pi(z_est, 0).squeeze(0)
 
         num_pi_trajs = int(self.cfg.mixture_coef * self.cfg.num_samples)
         total_samples = self.cfg.num_samples + num_pi_trajs
-        
-        final_actions = torch.zeros(self.N, self.cfg.action_dim, device=self.device)
-        
-        # CEM optimization per agent
-        for agent_idx in range(self.N):
-            mean = self._prev_mean[agent_idx].clone() # [H, A]
-            std = 2 * torch.ones(horizon, self.cfg.action_dim, device=self.device)
+        N, H, A = self.N, horizon, self.cfg.action_dim
+        B = total_samples
 
-            e_batch = e0.repeat(total_samples, 1, 1) # [B, N, latent]
+        # mean: [N, H, A], std: [N, H, A]
+        mean = self._prev_mean[:, :H].clone()
+        std  = 2 * torch.ones(N, H, A, device=self.device)
 
-            for i in range(self.cfg.iterations):
-                # 1. Sample own actions
-                a_own_random = torch.clamp(mean.unsqueeze(1) + std.unsqueeze(1) * \
-                    torch.randn(horizon, self.cfg.num_samples, self.cfg.action_dim, device=self.device), -1, 1)
-                
-                # Sample pi actions for own
-                if num_pi_trajs > 0:
-                    a_own_pi = torch.empty(horizon, num_pi_trajs, self.cfg.action_dim, device=self.device)
-                    e_curr = e0.repeat(num_pi_trajs, 1, 1)
-                    for t in range(horizon):
-                        # Construct joint action to step env forward
-                        a_joint = self._prev_mean[:, t].unsqueeze(0).repeat(num_pi_trajs, 1, 1) # [B, N, A]
-                        z_curr = self.model.communicate(e_curr, a_joint)
-                        a_own_pi[t] = self.model.pi(z_curr[:, agent_idx].unsqueeze(1), self.cfg.min_std).squeeze(1)
-                        # Replace agent's action
-                        a_joint[:, agent_idx] = a_own_pi[t]
-                        e_curr, _ = self.model.next(self.model.communicate(e_curr, a_joint), a_joint)
-                        
-                    actions_own = torch.cat([a_own_random, a_own_pi], dim=1) # [H, B, A]
-                else:
-                    actions_own = a_own_random
+        # e0 を [B, N, latent] に展開（全エージェント共通）
+        e_batch = e0.repeat(B, 1, 1)  # [B, N, latent]
 
-                # 2. Build joint actions [H, B, N, A] using previous means for OTHER agents
-                joint_actions = self._prev_mean.unsqueeze(1).repeat(1, total_samples, 1, 1).transpose(0, 1) # [H, B, N, A]
-                joint_actions[:, :, agent_idx, :] = actions_own
+        for i in range(self.cfg.iterations):
+            # ------------------------------------------------
+            # 1. ランダムサンプル: [H, N, num_samples, A]
+            # ------------------------------------------------
+            noise = torch.randn(H, N, self.cfg.num_samples, A, device=self.device)
+            a_random = torch.clamp(
+                mean.permute(1, 0, 2).unsqueeze(2) + std.permute(1, 0, 2).unsqueeze(2) * noise,
+                -1, 1
+            )  # [H, N, num_samples, A]
 
-                # 3. Evaluate trajectories
-                values = self.estimate_value(e_batch, joint_actions, horizon)[:, agent_idx] # [B]
-                
-                # 4. Select elites and update
-                elite_idxs = torch.topk(values, self.cfg.num_elites, dim=0).indices
-                elite_value = values[elite_idxs]
-                elite_actions = actions_own[:, elite_idxs]
+            # ------------------------------------------------
+            # 2. Policy サンプル: [H, N, num_pi_trajs, A]
+            # ------------------------------------------------
+            if num_pi_trajs > 0:
+                a_pi = torch.empty(H, N, num_pi_trajs, A, device=self.device)
+                e_curr = e0.repeat(num_pi_trajs, 1, 1)  # [num_pi_trajs, N, latent]
+                for t in range(H):
+                    # 全エージェントの joint action（prev_mean ベース）
+                    a_joint = self._prev_mean[:, t].unsqueeze(0).repeat(num_pi_trajs, 1, 1)  # [B_pi, N, A]
+                    z_curr = self.model.communicate(e_curr, a_joint)
+                    # 全エージェント同時に pi を取得: [B_pi, N, A]
+                    pi_out = self.model.pi(z_curr, self.cfg.min_std)  # [B_pi, N, A]
+                    a_pi[t] = pi_out.permute(1, 0, 2)  # [N, B_pi, A]
+                    # 全エージェントの action を置き換えて次ステップへ
+                    a_joint = pi_out  # [B_pi, N, A]
+                    e_curr, _ = self.model.next(
+                        self.model.communicate(e_curr, a_joint), a_joint
+                    )
 
-                max_value = elite_value.max(0)[0]
-                score = torch.exp(self.cfg.temperature * (elite_value - max_value))
-                score /= score.sum(0)
-                _mean = torch.sum(score.unsqueeze(0).unsqueeze(-1) * elite_actions, dim=1) / (score.sum(0) + 1e-9)
-                _std = torch.sqrt(torch.sum(score.unsqueeze(0).unsqueeze(-1) * (elite_actions - _mean.unsqueeze(1)) ** 2, dim=1) / (score.sum(0) + 1e-9))
-                _std = _std.clamp_(self.std, 2)
-                mean, std = self.cfg.momentum * mean + (1 - self.cfg.momentum) * _mean, _std
+                # [H, N, B, A] に結合
+                actions_all = torch.cat([a_random, a_pi], dim=2)  # [H, N, B, A]
+            else:
+                actions_all = a_random  # [H, N, B, A]
 
-            # Store the updated mean for this agent
-            self._prev_mean[agent_idx] = mean
-            
-            # Select action
-            score = score.cpu().numpy()
-            best_idx = np.random.choice(np.arange(score.shape[0]), p=score)
-            a = elite_actions[0, best_idx]
+            # ------------------------------------------------
+            # 3. Joint actions を構築: [H, B, N, A]
+            #    各エージェントの「自分のサンプル」を対角に配置し、
+            #    他エージェントは prev_mean で埋める
+            # ------------------------------------------------
+            # prev_mean ベースの joint: [H, B, N, A]
+            joint_base = self._prev_mean[:, :H].permute(1, 0, 2).unsqueeze(1).expand(H, B, N, A)
+            # actions_all: [H, N, B, A] → [H, B, N, A] に転置してコピー
+            actions_t = actions_all.permute(0, 2, 1, 3)  # [H, B, N, A]
+
+            # 全エージェントの joint を一括構築
+            # agent n の joint: actions_t の n 列だけ自分のサンプル、残りは joint_base
+            # → [N, H, B, N, A] を作り対角マスクで選択
+            joint_all = joint_base.unsqueeze(0).expand(N, H, B, N, A).clone()
+            # agent n について joint_all[n, :, :, n, :] = actions_all[:, n, :, :]
+            agent_idx_t = torch.arange(N, device=self.device)
+            joint_all[agent_idx_t, :, :, agent_idx_t, :] = actions_all.permute(1, 0, 2, 3)
+            # joint_all: [N, H, B, N, A]
+
+            # ------------------------------------------------
+            # 4. 全エージェント分を一括 evaluate
+            #    N 個の agent を B 次元にまとめる: [N*B, N, latent]
+            # ------------------------------------------------
+            e_all = e0.repeat(N * B, 1, 1)  # [N*B, N, latent]
+            # joint_actions を [N*B, ...] に reshape: [H, N*B, N, A]
+            joint_flat = joint_all.permute(1, 0, 2, 3, 4).reshape(H, N * B, N, A)
+
+            values_flat = self.estimate_value(e_all, joint_flat, horizon)  # [N*B, N]
+            # agent n の価値は values_flat[n*B:(n+1)*B, n]
+            values = torch.stack([
+                values_flat[n * B:(n + 1) * B, n] for n in range(N)
+            ], dim=0)  # [N, B]
+
+            # ------------------------------------------------
+            # 5. Elite 選択・CEM 更新（全エージェント並列）
+            # ------------------------------------------------
+            elite_idxs = torch.topk(values, self.cfg.num_elites, dim=1).indices  # [N, num_elites]
+
+            # elite_actions: [N, H, num_elites, A]
+            elite_actions = torch.stack([
+                actions_all[:, n, elite_idxs[n], :]  # [H, num_elites, A]
+                for n in range(N)
+            ], dim=0)  # [N, H, num_elites, A]
+
+            elite_value = torch.stack([
+                values[n, elite_idxs[n]] for n in range(N)
+            ], dim=0)  # [N, num_elites]
+
+            max_value = elite_value.max(dim=1, keepdim=True).values  # [N, 1]
+            score = torch.exp(self.cfg.temperature * (elite_value - max_value))  # [N, num_elites]
+            score = score / score.sum(dim=1, keepdim=True)  # [N, num_elites]
+
+            # [N, num_elites] -> [N, 1, num_elites, 1] for broadcasting with [N, H, num_elites, A]
+            w = score.unsqueeze(1).unsqueeze(-1)
+            _mean = (w * elite_actions).sum(dim=2)  # [N, H, A]
+            _std  = torch.sqrt((w * (elite_actions - _mean.unsqueeze(2)) ** 2).sum(dim=2)).clamp_(self.std, 2)
+
+            mean = self.cfg.momentum * mean + (1 - self.cfg.momentum) * _mean
+            std  = _std
+
+        # --- 最終アクション選択 ---
+        self._prev_mean[:, :H] = mean
+
+        score_np = score.cpu().numpy()  # [N, num_elites]
+        final_actions = torch.zeros(N, A, device=self.device)
+        for n in range(N):
+            best_idx = np.random.choice(self.cfg.num_elites, p=score_np[n])
+            a = elite_actions[n, 0, best_idx]  # [A]
             if not eval_mode:
-                a += std[0] * torch.randn(self.cfg.action_dim, device=self.device)
-            final_actions[agent_idx] = a.clamp(-1, 1)
+                a = a + std[n, 0] * torch.randn(A, device=self.device)
+            final_actions[n] = a.clamp(-1, 1)
 
         return final_actions
 
