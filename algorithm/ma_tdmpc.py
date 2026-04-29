@@ -234,7 +234,7 @@ class MATDMPC:
         
         weighted_loss = (total_loss * weights.mean()) # simplified weighting
         weighted_loss.register_hook(lambda grad: grad * (1/self.cfg.horizon))
-        weighted_loss.backward()
+        weighted_loss.backward(retain_graph=True)
         
         torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.cfg.grad_clip_norm)
         self.optim.step()

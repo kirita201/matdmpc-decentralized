@@ -11,6 +11,8 @@ from envs.mpe_wrapper import MPEWrapper
 from algorithm.ma_tdmpc import MATDMPC
 from algorithm.buffer import ReplayBuffer
 
+torch.autograd.set_detect_anomaly(True)
+
 class MockConfig:
     """Mock Config mimicking OmegaConf/yaml load"""
     def __init__(self, **entries):
