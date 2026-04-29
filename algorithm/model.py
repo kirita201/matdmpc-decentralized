@@ -108,10 +108,10 @@ class MACLM(nn.Module):
         return self._dynamics(x), self._reward(x).squeeze(-1) # return [B, N]
 
     def pi(self, z, std=0):
-        mu = torch.tanh(self._pi(z))
+        mu = (torch.tanh(self._pi(z)) + 1.0) / 2.0
         if std > 0:
             std_t = torch.ones_like(mu) * std
-            return h.TruncatedNormal(mu, std_t).sample(clip=0.3)
+            return h.TruncatedNormal(mu, std_t, low=0.0, high=1.0).sample(clip=0.3)
         return mu
 
     def Q(self, z, a):

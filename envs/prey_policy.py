@@ -56,7 +56,7 @@ class PreyNet(nn.Module):
         )
 
     def forward(self, obs: torch.Tensor) -> torch.Tensor:
-        return self.net(obs)
+        return (self.net(obs) + 1.0) / 2.0
 
 
 # ─────────────────────────────────────────────────────────────
@@ -114,7 +114,7 @@ class PreyPolicy:
             a = net(obs_t).squeeze(0)  # [action_dim]
             if self.noise_std > 0.0:
                 a = a + self.noise_std * torch.randn_like(a)
-                a = a.clamp(-1.0, 1.0)
+                a = a.clamp(0, 1.0)
             actions.append(a.cpu().numpy())
         return np.stack(actions)  # [n_prey, action_dim]
 

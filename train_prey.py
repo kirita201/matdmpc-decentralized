@@ -128,7 +128,7 @@ class PreyACAgent:
         else:
             a = mean
             
-        return a.clamp(-1, 1).cpu().numpy()
+        return a.clamp(0, 1).cpu().numpy()
 
     @torch.no_grad()
     def store(self, prey_obs, actions, rewards, dones):

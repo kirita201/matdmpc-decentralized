@@ -54,7 +54,7 @@ class MATDMPC:
         horizon = int(min(self.cfg.horizon, h.linear_schedule(self.cfg.horizon_schedule, step)))
 
         if step < self.cfg.seed_steps and not eval_mode:
-            return torch.empty(self.N, self.cfg.action_dim, device=self.device).uniform_(-1, 1)
+            return torch.empty(self.N, self.cfg.action_dim, device=self.device).uniform_(0, 1)
 
         e0 = self.model.encode(obs)  # [1, N, latent]
 
@@ -85,7 +85,7 @@ class MATDMPC:
             noise = torch.randn(H, N, self.cfg.num_samples, A, device=self.device)
             a_random = torch.clamp(
                 mean.permute(1, 0, 2).unsqueeze(2) + std.permute(1, 0, 2).unsqueeze(2) * noise,
-                -1, 1
+                0, 1
             )  # [H, N, num_samples, A]
 
             # ------------------------------------------------
@@ -182,7 +182,7 @@ class MATDMPC:
             a = elite_actions[n, 0, best_idx]  # [A]
             if not eval_mode:
                 a = a + std[n, 0] * torch.randn(A, device=self.device)
-            final_actions[n] = a.clamp(-1, 1)
+            final_actions[n] = a.clamp(0, 1)
 
         return final_actions
 
@@ -223,8 +223,8 @@ class MATDMPC:
 
             rho = (self.cfg.rho ** t)
             consistency_loss += rho * torch.mean(h.mse(e, next_e), dim=(1,2)).mean()
-            reward_loss += rho * h.mse(reward_pred, reward[t])
-            value_loss += rho * (h.mse(q_joint1, td_target) + h.mse(q_joint2, td_target))
+            reward_loss += rho * h.mse(reward_pred, reward[t], reduce=True)
+            value_loss += rho * (h.mse(q_joint1, td_target, reduce=True) + h.mse(q_joint2, td_target, reduce=True))
             priority_loss += rho * (h.l1(q_joint1, td_target) + h.l1(q_joint2, td_target)).squeeze(-1)
 
         total_loss = self.cfg.consistency_coef * consistency_loss.clamp(max=1e4) + \
