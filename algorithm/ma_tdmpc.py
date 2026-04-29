@@ -257,4 +257,10 @@ class MATDMPC:
             h.ema(self.model, self.model_target, self.cfg.tau)
 
         self.model.eval()
-        return {'total_loss': float(total_loss.item())}
+        return {
+            'total_loss': float(total_loss.item()),
+            'consistency_loss': float(consistency_loss.item()),
+            'reward_loss': float(reward_loss.item()),
+            'value_loss': float(value_loss.item()),
+            'pi_loss': float(pi_loss.item())
+        }

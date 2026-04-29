@@ -6,8 +6,9 @@ seed: 42
 device: "cuda"
 
 # Multi-Agent setup
-num_agents: 3
-obs_shape: [18]  # MPE simple_spread default obs dim for N=3
+task: "simple_spread"   # or "predator_prey"
+num_agents: 6           # 3 / 6 / 15
+obs_shape: [26]         # タスクとエージェント数に合わせて設定。make_task_cfg() で自動設定も可
 action_dim: 5    # Discrete/Continuous mixed in MPE, assume continuous 5
 
 # Training
