@@ -14,7 +14,8 @@ class MATDMPC:
         self.model = MACLM(cfg).to(self.device)
         self.model_target = deepcopy(self.model)
         
-        self.optim = torch.optim.Adam(self.model.parameters(), lr=self.cfg.lr)
+        model_params = [p for name, p in self.model.named_parameters() if '_pi' not in name]
+        self.optim = torch.optim.Adam(model_params, lr=self.cfg.lr)
         self.pi_optim = torch.optim.Adam(self.model._pi.parameters(), lr=self.cfg.lr)
         
         self.model.eval()
@@ -244,7 +245,7 @@ class MATDMPC:
         self.model.track_q_grad(False)
         pi_loss = 0
         for t, e_t in enumerate(es):
-            a_t = self.model.pi(self.model.communicate(e_t, action[0]), self.cfg.min_std) # Approx
+            a_t = self.model.pi(self.model.communicate(e_t, action[0]), 0) # Approx
             z_t = self.model.communicate(e_t, a_t)
             q1, q2 = self.model.Q(z_t, a_t)
             pi_loss += -torch.min(q1, q2).mean() * (self.cfg.rho ** t)
