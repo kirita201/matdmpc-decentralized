@@ -115,10 +115,6 @@ class MACLM(nn.Module):
         return mu
 
     def Q(self, z, a):
-        if z.shape[:-1] != a.shape[:-1]:
-            print(f"[DEBUG Shape Error] z.shape: {z.shape}, a.shape: {a.shape}")
-        if z.device != a.device:
-            print(f"[DEBUG Device Error] z.device: {z.device}, a.device: {a.device}")
         x = torch.cat([z, a], dim=-1)
         return self._Q1(x).squeeze(-1), self._Q2(x).squeeze(-1) # return [B, N]
     
