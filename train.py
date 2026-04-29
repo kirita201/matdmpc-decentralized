@@ -10,6 +10,7 @@ from torch.utils.tensorboard import SummaryWriter
 from envs.mpe_wrapper import MPEWrapper
 from algorithm.ma_tdmpc import MATDMPC
 from algorithm.buffer import ReplayBuffer
+from tqdm import tqdm
 
 torch.autograd.set_detect_anomaly(True)
 
@@ -87,7 +88,11 @@ def train():
 
         if step >= cfg.seed_steps:
             num_updates = cfg.seed_steps if step == cfg.seed_steps else cfg.episode_length
-            for i in range(num_updates):
+
+            # seed_stepsの初回大量アップデートの時だけプログレスバーを表示
+            update_iterator = tqdm(range(num_updates), desc="Initial Updates") if num_updates > cfg.episode_length else range(num_updates)
+
+            for i in update_iterator:
                 loss_info = agent.update(buffer, step + i)
 
                 if i == num_updates - 1:
