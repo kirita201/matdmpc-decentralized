@@ -1,5 +1,4 @@
 # cfgs/default.yaml
-task: "simple_spread"  # MPE Cooperative Navigation
 modality: "state"
 exp_name: "ma_tdmpc_baseline"
 seed: 42
