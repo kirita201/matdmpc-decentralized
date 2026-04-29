@@ -24,7 +24,8 @@ eval_episodes: 10
 max_buffer_size: 20000
 batch_size: 512
 per_alpha: 0.6
-per_beta: 0.4
+per_beta_start: 0.4
+per_beta_end: 1.0
 
 # Architecture (MACLM & Mixing)
 latent_dim: 128

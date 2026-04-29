@@ -187,7 +187,8 @@ class MATDMPC:
         return final_actions
 
     def update(self, replay_buffer, step):
-        obs, next_obses, action, reward, idxs, weights = replay_buffer.sample()
+        beta = h.linear_schedule_val(self.cfg.per_beta_start, self.cfg.per_beta_end, self.cfg.train_steps, step)
+        obs, next_obses, action, reward, idxs, weights = replay_buffer.sample(beta)
         self.optim.zero_grad(set_to_none=True)
         self.std = h.linear_schedule(self.cfg.std_schedule, step)
         self.model.train()

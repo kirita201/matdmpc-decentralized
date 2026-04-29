@@ -37,7 +37,7 @@ class ReplayBuffer:
     def update_priorities(self, idxs, priorities):
         self._priorities[idxs] = priorities.squeeze(-1).to(self.device) + self._eps
 
-    def sample(self):
+    def sample(self, beta):
         probs = (self._priorities if self._full else self._priorities[:self.idx]) ** self.cfg.per_alpha
         probs /= probs.sum()
         total = len(probs)
@@ -53,7 +53,7 @@ class ReplayBuffer:
                     break
                     
         idxs = torch.tensor(valid_idxs, device=self.device, dtype=torch.long)
-        weights = (total * probs[idxs]) ** (-self.cfg.per_beta)
+        weights = (total * probs[idxs]) ** (-beta)
         weights /= weights.max()
 
         obs = self._obs[idxs]
