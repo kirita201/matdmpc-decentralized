@@ -24,8 +24,7 @@ eval_episodes: 10
 max_buffer_size: 20000
 batch_size: 512
 per_alpha: 0.6
-per_beta_start: 0.4
-per_beta_end: 1.0
+per_beta: 0.4
 
 # Architecture (MACLM & Mixing)
 latent_dim: 128
@@ -57,3 +56,9 @@ rho: 0.5 # Temporal decay factor
 consistency_coef: 2.0
 reward_coef: 0.5
 value_coef: 0.1
+
+# Prey Policy (predator_prey タスク時のみ使用)
+# prey_ckpt_path を省略すると checkpoints/prey_N{num_agents}.pt を自動検索する。
+# チェックポイントが存在しない場合はランダムポリシーにフォールバックし警告を表示。
+prey_ckpt_path: null       # 例: "checkpoints/prey_N6.pt"
+prey_noise_std: 0.05       # 推論時に加えるガウスノイズ (0 = 決定論的)

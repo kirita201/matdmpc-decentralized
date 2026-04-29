@@ -23,6 +23,7 @@ MA-TDMPC用 MPEラッパー
 """
 
 import numpy as np
+from pathlib import Path
 from pettingzoo.mpe._mpe_utils.core import Agent, Landmark, World
 from pettingzoo.mpe._mpe_utils.scenario import BaseScenario
 from pettingzoo.mpe._mpe_utils.simple_env import SimpleEnv, make_env
@@ -354,6 +355,43 @@ PREDPREY_CONFIGS = {
 
 
 # ─────────────────────────────────────────────────────────
+# Prey ポリシーロードヘルパー
+# ─────────────────────────────────────────────────────────
+
+def _load_prey_policy(ckpt_path, n_prey, device, noise_std, env, prey_agent_ids):
+    """
+    チェックポイントから PreyPolicy をロードする。
+    チェックポイントが存在しない場合はランダムポリシー (未学習 MLP + ノイズ) を返す。
+
+    Parameters
+    ----------
+    ckpt_path      : Path  チェックポイントファイルパス
+    n_prey         : int   good agent 数
+    device         : str   "cuda" or "cpu"
+    noise_std      : float 推論時ノイズ
+    env            : PettingZoo AEC env  obs_dim / action_dim 取得用
+    prey_agent_ids : list[str]
+    """
+    # 遅延インポート (循環 import 回避)
+    from envs.prey_policy import PreyPolicy, PreyNet
+
+    env.reset()
+    obs_dim    = env.observe(prey_agent_ids[0]).shape[0]
+    action_dim = env.action_space(prey_agent_ids[0]).shape[0]
+
+    if Path(ckpt_path).exists():
+        policy = PreyPolicy.load(ckpt_path, device=device, noise_std=noise_std)
+    else:
+        print(
+            f"[MPEWrapper] WARNING: prey checkpoint not found at '{ckpt_path}'. "
+            f"Falling back to RANDOM prey policy. "
+            f"Run `python train_prey.py --N {n_prey}` to train a prey policy."
+        )
+        policy = PreyPolicy.random(n_prey, obs_dim, action_dim, device=device)
+    return policy
+
+
+# ─────────────────────────────────────────────────────────
 # MA-TDMPC 向けラッパー
 # ─────────────────────────────────────────────────────────
 class MPEWrapper:
@@ -464,6 +502,26 @@ class MPEWrapper:
         self.N = N
         self._task = "predprey"
         self._all_agents = self.env.possible_agents
+        self._prey_agents = [a for a in self.env.possible_agents if "adversary" not in a]
+
+        # ── Prey ポリシーのロード ─────────────────────────────
+        # cfg.prey_ckpt_path が指定されていればそれを、なければデフォルトパスを探す。
+        # チェックポイントが見つからない場合はランダムポリシーにフォールバック。
+        device = getattr(cfg, "device", "cpu")
+        prey_noise = getattr(cfg, "prey_noise_std", 0.0)
+
+        ckpt_path = getattr(cfg, "prey_ckpt_path", None)
+        if ckpt_path is None:
+            ckpt_path = Path("checkpoints") / f"prey_N{N}.pt"
+
+        self._prey_policy = _load_prey_policy(
+            ckpt_path=Path(ckpt_path),
+            n_prey=num_good,
+            device=device,
+            noise_std=prey_noise,
+            env=self.env,
+            prey_agent_ids=self._prey_agents,
+        )
 
     # ── 共通インタフェース ──────────────────────────────
     def reset(self):
@@ -509,18 +567,22 @@ class MPEWrapper:
 
     # ── predator_prey step ───────────────────────────────
     def _step_predprey(self, actions):
-        """捕食者の行動を渡し、残りのエージェント(獲物)はランダム行動。"""
-        adv_idx = 0
-        rewards = []
-        dones = []
+        """捕食者の行動を渡し、獲物は訓練済みポリシー (なければランダム) で動かす。"""
+        # 獲物の現在観測を取得してポリシーで行動決定
+        prey_obs = np.stack([self.env.observe(a) for a in self._prey_agents])
+        prey_actions = self._prey_policy.act(prey_obs)  # [n_prey, action_dim]
+
+        adv_idx  = 0
+        prey_idx = 0
+        rewards  = []
+        dones    = []
         for agent in self._all_agents:
             if "adversary" in agent:
                 act = actions[adv_idx]
                 adv_idx += 1
             else:
-                # 獲物: ランダム逃走行動
-                act_space = self.env.action_space(agent)
-                act = act_space.sample()
+                act = prey_actions[prey_idx]
+                prey_idx += 1
             self.env.step(act)
         for agent in self.agents:
             rewards.append(self.env.rewards[agent])
