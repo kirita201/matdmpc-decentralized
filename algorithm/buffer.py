@@ -43,14 +43,16 @@ class ReplayBuffer:
         total = len(probs)
         
         # Valid indices (ensure we can sample a full horizon)
+        # --- 修正箇所 ---
         valid_idxs = []
-        for _ in range(self.cfg.batch_size):
-            while True:
-                idx = np.random.choice(total, p=probs.cpu().numpy())
-                # Check if the sequence overlaps with the current insertion index or crosses an episode boundary
+        # CPU転送を避け、GPU上で一括サンプリング (多めに取得してフィルタリング)
+        while len(valid_idxs) < self.cfg.batch_size:
+            sampled_idxs = torch.multinomial(probs, int(self.cfg.batch_size * 1.5), replacement=True).tolist()
+            for idx in sampled_idxs:
                 if (idx + self.cfg.horizon < total) and not self._done[idx:idx+self.cfg.horizon].any():
                     valid_idxs.append(idx)
-                    break
+                    if len(valid_idxs) == self.cfg.batch_size:
+                        break
                     
         idxs = torch.tensor(valid_idxs, device=self.device, dtype=torch.long)
         weights = (total * probs[idxs]) ** (-beta)
