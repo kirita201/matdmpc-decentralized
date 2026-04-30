@@ -42,9 +42,16 @@ class MATDMPC:
             discount *= self.cfg.discount
             
         # Terminal Q value
-        z = self.model.communicate(e, self.model.pi(e, self.cfg.min_std))
-        pi_a = self.model.pi(z, self.cfg.min_std)
-        q1, q2 = self.model.Q(z, pi_a)
+        # 1. 軌道の最後のアクションを使って仮の z を作り、方策から pi_a をサンプリングする
+        last_action = actions[-1]
+        z_pre = self.model.communicate(e, last_action)
+        pi_a = self.model.pi(z_pre, self.cfg.min_std)
+        
+        # 2. 出力された pi_a を使って、Q値評価用の正しい z を作り直す
+        z_eval = self.model.communicate(e, pi_a)
+        
+        # 3. 正しいペア (z_eval, pi_a) で Q値を計算する
+        q1, q2 = self.model.Q(z_eval, pi_a)
         q_min = torch.min(q1, q2)
         G += discount * q_min
         return G
@@ -100,7 +107,7 @@ class MATDMPC:
                     a_joint = self._prev_mean[:, t].unsqueeze(0).repeat(num_pi_trajs, 1, 1)  # [B_pi, N, A]
                     z_curr = self.model.communicate(e_curr, a_joint)
                     # 全エージェント同時に pi を取得: [B_pi, N, A]
-                    pi_out = self.model.pi(z_curr, self.cfg.min_std)  # [B_pi, N, A]
+                    pi_out = self.model.pi(z_curr, self.std)  # [B_pi, N, A]
                     a_pi[t] = pi_out.permute(1, 0, 2)  # [N, B_pi, A]
                     # 全エージェントの action を置き換えて次ステップへ
                     a_joint = pi_out  # [B_pi, N, A]
@@ -244,8 +251,9 @@ class MATDMPC:
         self.pi_optim.zero_grad()
         self.model.track_q_grad(False)
         pi_loss = 0
-        for t, e_t in enumerate(es):
-            a_t = self.model.pi(self.model.communicate(e_t, action[0]), 0) # Approx
+        for t in range(self.cfg.horizon):
+            e_t = es[t]
+            a_t = self.model.pi(self.model.communicate(e_t, action[t]), 0)
             z_t = self.model.communicate(e_t, a_t)
             q1, q2 = self.model.Q(z_t, a_t)
             pi_loss += -torch.min(q1, q2).mean() * (self.cfg.rho ** t)

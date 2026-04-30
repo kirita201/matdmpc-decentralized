@@ -20,7 +20,7 @@ eval_freq: 10000
 eval_episodes: 10
 
 # Buffer
-max_buffer_size: 20000
+max_buffer_size: 500000
 batch_size: 512
 per_alpha: 0.6
 per_beta: "linear(0.4, 1.0, 500000)"
