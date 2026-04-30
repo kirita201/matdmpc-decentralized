@@ -11,7 +11,6 @@ class MATDMPC:
         self.cfg = cfg
         self.device = torch.device(cfg.device)
         self.std = h.linear_schedule(cfg.std_schedule, 0)
-        self.model = MACLM(cfg).to(self.device)
         # モデルの初期化後にコンパイルを追加
         model = MACLM(cfg).to(self.device)
         if hasattr(torch, 'compile'):
@@ -190,7 +189,7 @@ class MATDMPC:
         # --- 最終アクション選択 ---
         self._prev_mean[:, :H] = mean
 
-        score_np = score.cpu().numpy()  # [N, num_elites]
+        score_np = score.float().cpu().numpy()  # [N, num_elites]
         final_actions = torch.zeros(N, A, device=self.device)
         for n in range(N):
             best_idx = np.random.choice(self.cfg.num_elites, p=score_np[n])
@@ -226,7 +225,7 @@ class MATDMPC:
                     next_e = self.model_target.encode(next_obs)
                     
                     # Target Joint Q
-                    next_a = self.model.pi(self.model.communicate(next_e, action[t+1] if t < self.cfg.horizon-1 else action[t]), self.cfg.min_std)
+                    next_a = self.model.pi(self.model.communicate(next_e, action[t+1]), self.cfg.min_std)
                     next_z = self.model_target.communicate(next_e, next_a)
                     nq1, nq2 = self.model_target.Q(next_z, next_a)
                     nq_joint1, nq_joint2 = self.model_target.Q_joint(nq1, nq2, next_e)
@@ -282,9 +281,9 @@ class MATDMPC:
 
         self.model.eval()
         return {
-            'total_loss': float(total_loss.item()),
-            'consistency_loss': float(consistency_loss.item()),
-            'reward_loss': float(reward_loss.item()),
-            'value_loss': float(value_loss.item()),
+            'total_loss': float(total_loss.mean().item()),
+            'consistency_loss': float(consistency_loss.mean().item()),
+            'reward_loss': float(reward_loss.mean().item()),
+            'value_loss': float(value_loss.mean().item()),
             'pi_loss': float(pi_loss.item())
         }
