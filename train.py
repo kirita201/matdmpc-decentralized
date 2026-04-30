@@ -102,7 +102,7 @@ def train():
             print(f"Step: {step}, Episode: {episode_idx}, Reward: {ep_reward}")
 
         if step % cfg.eval_freq == 0 and step > 0:
-            eval_reward = evaluate(env, agent, cfg.eval_episodes, step)
+            eval_reward = evaluate(eval_env, agent, cfg.eval_episodes, step, log_dir ,save_gif=True)
             print(f">>> EVAL at Step {step}: Reward = {eval_reward}")
 
 if __name__ == '__main__':
