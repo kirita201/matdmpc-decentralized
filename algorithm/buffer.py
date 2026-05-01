@@ -23,6 +23,7 @@ class ReplayBuffer:
         self.idx = 0
 
         self._valid_mask = None
+        self._valid_mask_dirty = True
 
     def add(self, obs, action, reward, done):
         self._obs[self.idx] = torch.tensor(obs, dtype=torch.float32, device=self.device)
