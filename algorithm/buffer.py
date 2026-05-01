@@ -1,6 +1,7 @@
 # algorithm/buffer.py
 import torch
 import numpy as np
+import torch.nn.functional as F
 
 class ReplayBuffer:
     """Multi-Agent Prioritized Replay Buffer"""
@@ -21,6 +22,8 @@ class ReplayBuffer:
         self._full = False
         self.idx = 0
 
+        self._valid_mask = None
+
     def add(self, obs, action, reward, done):
         self._obs[self.idx] = torch.tensor(obs, dtype=torch.float32, device=self.device)
         self._action[self.idx] = torch.tensor(action, dtype=torch.float32, device=self.device)
@@ -33,28 +36,37 @@ class ReplayBuffer:
         self.idx = (self.idx + 1) % self.capacity
         if self.idx == 0:
             self._full = True
+        self._valid_mask_dirty = True
 
     def update_priorities(self, idxs, priorities):
         self._priorities[idxs] = priorities.squeeze(-1).to(self.device) + self._eps
+
+    def _compute_valid_mask(self):
+        total = self.capacity if self._full else self.idx
+        done_1d = self._done[:total].squeeze(-1).float()  # [T]
+
+        any_done = F.max_pool1d(
+            done_1d.unsqueeze(0).unsqueeze(0),
+            kernel_size=self.cfg.horizon,
+            stride=1,
+            padding=0
+        ).squeeze().bool()  # [T - horizon + 1]
+
+        valid = torch.zeros(total, dtype=torch.bool, device=self.device)
+        valid[:total - self.cfg.horizon + 1] = ~any_done
+        return valid
 
     def sample(self, beta):
         probs = (self._priorities if self._full else self._priorities[:self.idx]) ** self.cfg.per_alpha
         probs /= probs.sum()
         total = len(probs)
         
-        # Valid indices (ensure we can sample a full horizon)
-        # --- 修正箇所 ---
-        valid_idxs = []
-        # CPU転送を避け、GPU上で一括サンプリング (多めに取得してフィルタリング)
-        while len(valid_idxs) < self.cfg.batch_size:
-            sampled_idxs = torch.multinomial(probs, int(self.cfg.batch_size * 1.5), replacement=True).tolist()
-            for idx in sampled_idxs:
-                if (idx + self.cfg.horizon < total) and not self._done[idx:idx+self.cfg.horizon].any():
-                    valid_idxs.append(idx)
-                    if len(valid_idxs) == self.cfg.batch_size:
-                        break
-                    
-        idxs = torch.tensor(valid_idxs, device=self.device, dtype=torch.long)
+        if self._valid_mask_dirty:
+            self._valid_mask = self._compute_valid_mask()
+            self._valid_mask_dirty = False
+        probs_filtered = probs * self._valid_mask.float()
+        probs_filtered /= probs_filtered.sum()
+        idxs = torch.multinomial(probs_filtered, self.cfg.batch_size, replacement=True)
         weights = (total * probs[idxs]) ** (-beta)
         weights /= weights.max()
 

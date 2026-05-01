@@ -554,10 +554,12 @@ class MPEWrapper:
 
     # ── spread step ─────────────────────────────────────
     def _step_spread(self, actions):
-        rewards = []
-        dones = []
         for i, agent in enumerate(self.agents):
             self.env.step(actions[i])
+        
+        rewards = []
+        dones = []
+        for agent in self.agents:
             rewards.append(self.env.rewards[agent])
             dones.append(
                 self.env.terminations[agent] or self.env.truncations[agent]
