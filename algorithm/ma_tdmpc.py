@@ -93,8 +93,8 @@ class MATDMPC:
         # e0 を [B, N, latent] に展開（全エージェント共通）
         e_batch = e0.repeat(B, 1, 1)  # [B, N, latent]
 
-        #with torch.autocast(device_type=self.device.type, dtype=torch.bfloat16):
-        with torch.autocast(device_type=self.device.type, dtype=torch.float16):
+        with torch.autocast(device_type=self.device.type, dtype=torch.bfloat16):
+        #with torch.autocast(device_type=self.device.type, dtype=torch.float16):
             for i in range(self.cfg.iterations):
                 # ------------------------------------------------
                 # 1. ランダムサンプル: [H, N, num_samples, A]
@@ -217,8 +217,8 @@ class MATDMPC:
         self.std = h.linear_schedule(self.cfg.std_schedule, step)
         self.model.train()
 
-        #with torch.autocast(device_type=self.device.type, dtype=torch.bfloat16):
-        with torch.autocast(device_type=self.device.type, dtype=torch.float16):
+        with torch.autocast(device_type=self.device.type, dtype=torch.bfloat16):
+        #with torch.autocast(device_type=self.device.type, dtype=torch.float16):
             e = self.model.encode(obs)
             es = [e.detach()]
 
@@ -263,15 +263,15 @@ class MATDMPC:
             weighted_loss.register_hook(lambda grad: grad * (1/self.cfg.horizon))
 
 
-        #weighted_loss.backward()
+        weighted_loss.backward()
         
-        #torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.cfg.grad_clip_norm)
-        #self.optim.step()
-
-        self.scaler.scale(weighted_loss).backward()
-        self.scaler.unscale_(self.optim)
         torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.cfg.grad_clip_norm)
-        self.scaler.step(self.optim)
+        self.optim.step()
+
+        #self.scaler.scale(weighted_loss).backward()
+        #self.scaler.unscale_(self.optim)
+        #torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.cfg.grad_clip_norm)
+        #self.scaler.step(self.optim)
         
         # 修正後: NaNが発生した場合は安全な値(1.0)に変換してバッファの破壊を防ぐ
         p_loss = priority_loss.clamp(max=1e4).float().detach()
@@ -282,8 +282,8 @@ class MATDMPC:
         self.pi_optim.zero_grad()
         self.model.track_q_grad(False)
 
-        #with torch.autocast(device_type=self.device.type, dtype=torch.bfloat16):
-        with torch.autocast(device_type=self.device.type, dtype=torch.float16):
+        with torch.autocast(device_type=self.device.type, dtype=torch.bfloat16):
+        #with torch.autocast(device_type=self.device.type, dtype=torch.float16):
             pi_loss = 0
             for t in range(self.cfg.horizon):
                 e_t = es[t]
@@ -292,15 +292,15 @@ class MATDMPC:
                 q1, q2 = self.model.Q(z_t, a_t)
                 pi_loss += -torch.min(q1, q2).mean() * (self.cfg.rho ** t)
         
-        #pi_loss.backward()
-        #torch.nn.utils.clip_grad_norm_(self.model._pi.parameters(), self.cfg.grad_clip_norm)
-        #self.pi_optim.step()
-
-        self.scaler.scale(pi_loss).backward()
-        self.scaler.unscale_(self.pi_optim)
+        pi_loss.backward()
         torch.nn.utils.clip_grad_norm_(self.model._pi.parameters(), self.cfg.grad_clip_norm)
-        self.scaler.step(self.pi_optim)
-        self.scaler.update()
+        self.pi_optim.step()
+
+        #self.scaler.scale(pi_loss).backward()
+        #self.scaler.unscale_(self.pi_optim)
+        #torch.nn.utils.clip_grad_norm_(self.model._pi.parameters(), self.cfg.grad_clip_norm)
+        #self.scaler.step(self.pi_optim)
+        #self.scaler.update()
 
         self.model.track_q_grad(True)
 
