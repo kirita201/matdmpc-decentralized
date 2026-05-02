@@ -179,7 +179,7 @@ class MATDMPC:
 
                 max_value = elite_value.max(dim=1, keepdim=True).values  # [N, 1]
                 score = torch.exp(self.cfg.temperature * (elite_value - max_value))  # [N, num_elites]
-                score = score / score.sum(dim=1, keepdim=True)  # [N, num_elites]
+                score = score / (score.sum(dim=1, keepdim=True) + 1e-8)  # [N, num_elites]
 
                 # [N, num_elites] -> [N, 1, num_elites, 1] for broadcasting with [N, H, num_elites, A]
                 w = score.unsqueeze(1).unsqueeze(-1)
@@ -266,7 +266,10 @@ class MATDMPC:
         torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.cfg.grad_clip_norm)
         self.scaler.step(self.optim)
         
-        replay_buffer.update_priorities(idxs, priority_loss.clamp(max=1e4).float().detach())
+        # 修正後: NaNが発生した場合は安全な値(1.0)に変換してバッファの破壊を防ぐ
+        p_loss = priority_loss.clamp(max=1e4).float().detach()
+        safe_p_loss = torch.nan_to_num(p_loss, nan=1.0)
+        replay_buffer.update_priorities(idxs, safe_p_loss)
 
         # Update Policy
         self.pi_optim.zero_grad()

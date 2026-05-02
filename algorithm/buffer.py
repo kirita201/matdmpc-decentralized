@@ -59,14 +59,14 @@ class ReplayBuffer:
 
     def sample(self, beta):
         probs = (self._priorities if self._full else self._priorities[:self.idx]) ** self.cfg.per_alpha
-        probs /= probs.sum()
+        probs /= (probs.sum() + 1e-8)
         total = len(probs)
         
         if self._valid_mask_dirty:
             self._valid_mask = self._compute_valid_mask()
             self._valid_mask_dirty = False
         probs_filtered = probs * self._valid_mask.float()
-        probs_filtered /= probs_filtered.sum()
+        probs_filtered /= (probs_filtered.sum() + 1e-8)
         idxs = torch.multinomial(probs_filtered, self.cfg.batch_size, replacement=True)
         weights = (total * probs[idxs]) ** (-beta)
         weights /= weights.max()
