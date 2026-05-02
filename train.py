@@ -12,6 +12,9 @@ from algorithm.ma_tdmpc import MATDMPC
 from algorithm.buffer import ReplayBuffer
 from tqdm import tqdm
 
+torch.backends.cuda.matmul.allow_tf32 = True
+torch.backends.cudnn.benchmark         = True
+
 class MockConfig:
     """Mock Config mimicking OmegaConf/yaml load"""
     def __init__(self, **entries):

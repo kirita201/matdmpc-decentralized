@@ -77,10 +77,18 @@ class ReplayBuffer:
         action = torch.empty((self.cfg.horizon+1, self.cfg.batch_size, self.N, self.cfg.action_dim), dtype=torch.float32, device=self.device)
         reward = torch.empty((self.cfg.horizon+1, self.cfg.batch_size, self.N), dtype=torch.float32, device=self.device)
         
+        """
         for t in range(self.cfg.horizon+1):
             _idxs = idxs + t
             next_obs[t] = self._obs[_idxs + 1]
             action[t] = self._action[_idxs]
             reward[t] = self._reward[_idxs]
+        """
+
+        idx_mat = (idxs.unsqueeze(0) + self._offsets.unsqueeze(1))  # [H+1, B]
+
+        next_obs = self._obs[idx_mat + 1]    # [H+1, B, N, obs_dim]
+        action   = self._action[idx_mat]     # [H+1, B, N, action_dim]
+        reward   = self._reward[idx_mat]     # [H+1, B, N]
 
         return obs, next_obs, action, reward, idxs, weights
