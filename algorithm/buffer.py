@@ -85,7 +85,8 @@ class ReplayBuffer:
             reward[t] = self._reward[_idxs]
         """
 
-        idx_mat = (idxs.unsqueeze(0) + self._offsets.unsqueeze(1))  # [H+1, B]
+        offsets = torch.arange(self.cfg.horizon + 1, device=self.device)  # [H+1]
+        idx_mat = (idxs.unsqueeze(0) + offsets.unsqueeze(1))  # [H+1, B]
 
         next_obs = self._obs[idx_mat + 1]    # [H+1, B, N, obs_dim]
         action   = self._action[idx_mat]     # [H+1, B, N, action_dim]
