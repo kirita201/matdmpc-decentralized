@@ -177,9 +177,16 @@ class MATDMPC:
                     values[n, elite_idxs[n]] for n in range(N)
                 ], dim=0)  # [N, num_elites]
 
-                max_value = elite_value.max(dim=1, keepdim=True).values  # [N, 1]
-                score = torch.exp(self.cfg.temperature * (elite_value - max_value))  # [N, num_elites]
+                # --- 修正: 計算精度を保つためにfloat32にキャスト ---
+                elite_value_f32 = elite_value.float()
+                max_value = elite_value_f32.max(dim=1, keepdim=True).values  # [N, 1]
+                #max_value = elite_value.max(dim=1, keepdim=True).values  # [N, 1]
+
+                # float32のまま計算を行う
+                score = torch.exp(self.cfg.temperature * (elite_value_f32 - max_value))  # [N, num_elites]
                 score = score / (score.sum(dim=1, keepdim=True) + 1e-8)  # [N, num_elites]
+                #score = torch.exp(self.cfg.temperature * (elite_value - max_value))  # [N, num_elites]
+                #score = score / (score.sum(dim=1, keepdim=True) + 1e-8)  # [N, num_elites]
 
                 # [N, num_elites] -> [N, 1, num_elites, 1] for broadcasting with [N, H, num_elites, A]
                 w = score.unsqueeze(1).unsqueeze(-1)
@@ -302,9 +309,9 @@ class MATDMPC:
 
         self.model.eval()
         return {
-            'total_loss': float(total_loss.mean().item()),
-            'consistency_loss': float(consistency_loss.mean().item()),
-            'reward_loss': float(reward_loss.mean().item()),
-            'value_loss': float(value_loss.mean().item()),
-            'pi_loss': float(pi_loss.item())
+            'total_loss': total_loss.mean().detach(),
+            'consistency_loss': consistency_loss.mean().detach(),
+            'reward_loss': reward_loss.mean().detach(),
+            'value_loss': value_loss.mean().detach(),
+            'pi_loss': pi_loss.detach()
         }

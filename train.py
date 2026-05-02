@@ -98,7 +98,7 @@ def train():
 
                 if i == num_updates - 1:
                     for loss_name, loss_val in loss_info.items():
-                        writer.add_scalar(f"Loss/{loss_name}", loss_val, step + i)
+                        writer.add_scalar(f"Loss/{loss_name}", loss_val.item(), step + i)
 
         episode_idx += 1
         if episode_idx % 10 == 0:
