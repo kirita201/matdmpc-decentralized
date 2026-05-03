@@ -217,8 +217,8 @@ class MATDMPC:
         self.std = h.linear_schedule(self.cfg.std_schedule, step)
         self.model.train()
 
-        with torch.autocast(device_type=self.device.type, dtype=torch.bfloat16):
-        #with torch.autocast(device_type=self.device.type, dtype=torch.float16):
+        #with torch.autocast(device_type=self.device.type, dtype=torch.bfloat16):
+        with torch.autocast(device_type=self.device.type, dtype=torch.float16):
             e = self.model.encode(obs)
             es = [e.detach()]
 
@@ -263,15 +263,14 @@ class MATDMPC:
             weighted_loss.register_hook(lambda grad: grad * (1/self.cfg.horizon))
 
 
-        weighted_loss.backward()
-        
-        torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.cfg.grad_clip_norm)
-        self.optim.step()
-
-        #self.scaler.scale(weighted_loss).backward()
-        #self.scaler.unscale_(self.optim)
+        #weighted_loss.backward()
         #torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.cfg.grad_clip_norm)
-        #self.scaler.step(self.optim)
+        #self.optim.step()
+
+        self.scaler.scale(weighted_loss).backward()
+        self.scaler.unscale_(self.optim)
+        torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.cfg.grad_clip_norm)
+        self.scaler.step(self.optim)
         
         # 修正後: NaNが発生した場合は安全な値(1.0)に変換してバッファの破壊を防ぐ
         p_loss = priority_loss.clamp(max=1e4).float().detach()
