@@ -13,7 +13,7 @@ action_dim: 5    # Discrete/Continuous mixed in MPE, assume continuous 5
 # Training
 train_steps: 500000
 episode_length: 25
-seed_steps: 1000
+seed_steps: 5000
 update_freq: 10
 action_repeat: 1
 eval_freq: 10000
