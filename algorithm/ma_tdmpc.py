@@ -281,8 +281,8 @@ class MATDMPC:
         self.pi_optim.zero_grad()
         self.model.track_q_grad(False)
 
-        with torch.autocast(device_type=self.device.type, dtype=torch.bfloat16):
-        #with torch.autocast(device_type=self.device.type, dtype=torch.float16):
+        #with torch.autocast(device_type=self.device.type, dtype=torch.bfloat16):
+        with torch.autocast(device_type=self.device.type, dtype=torch.float16):
             pi_loss = 0
             for t in range(self.cfg.horizon):
                 e_t = es[t]
@@ -291,15 +291,15 @@ class MATDMPC:
                 q1, q2 = self.model.Q(z_t, a_t)
                 pi_loss += -torch.min(q1, q2).mean() * (self.cfg.rho ** t)
         
-        pi_loss.backward()
-        torch.nn.utils.clip_grad_norm_(self.model._pi.parameters(), self.cfg.grad_clip_norm)
-        self.pi_optim.step()
-
-        #self.scaler.scale(pi_loss).backward()
-        #self.scaler.unscale_(self.pi_optim)
+        #pi_loss.backward()
         #torch.nn.utils.clip_grad_norm_(self.model._pi.parameters(), self.cfg.grad_clip_norm)
-        #self.scaler.step(self.pi_optim)
-        #self.scaler.update()
+        #self.pi_optim.step()
+
+        self.scaler.scale(pi_loss).backward()
+        self.scaler.unscale_(self.pi_optim)
+        torch.nn.utils.clip_grad_norm_(self.model._pi.parameters(), self.cfg.grad_clip_norm)
+        self.scaler.step(self.pi_optim)
+        self.scaler.update()
 
         self.model.track_q_grad(True)
 
