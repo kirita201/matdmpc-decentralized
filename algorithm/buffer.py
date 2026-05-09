@@ -93,3 +93,29 @@ class ReplayBuffer:
         reward   = self._reward[idx_mat]     # [H+1, B, N]
 
         return obs, next_obs, action, reward, idxs, weights
+    
+    def save(self, filepath):
+        """バッファの状態をCPUメモリに移して保存"""
+        state = {
+            'obs': self._obs.cpu(),
+            'action': self._action.cpu(),
+            'reward': self._reward.cpu(),
+            'done': self._done.cpu(),
+            'priorities': self._priorities.cpu(),
+            'idx': self.idx,
+            'full': self._full
+        }
+        torch.save(state, filepath)
+
+    def load(self, filepath):
+        """バッファの状態をデバイスに読み込み"""
+        checkpoint = torch.load(filepath, map_location=self.device)
+        self._obs.copy_(checkpoint['obs'])
+        self._action.copy_(checkpoint['action'])
+        self._reward.copy_(checkpoint['reward'])
+        self._done.copy_(checkpoint['done'])
+        self._priorities.copy_(checkpoint['priorities'])
+        self.idx = checkpoint['idx']
+        self._full = checkpoint['full']
+        self._valid_mask_dirty = True
+        print(f"[ReplayBuffer] Loaded buffer state from {filepath}")

@@ -63,6 +63,13 @@ def train():
     log_dir = Path(f"logs/{task_name}_N{cfg.num_agents}")
     log_dir.mkdir(parents=True, exist_ok=True)
     writer = SummaryWriter(log_dir=str(log_dir))
+
+    # チェックポイント用ディレクトリの準備
+    ckpt_dir = Path(getattr(cfg, "ckpt_dir", "checkpoints")) / f"{task_name}_N{cfg.num_agents}"
+    ckpt_dir.mkdir(parents=True, exist_ok=True)
+    model_ckpt_path = ckpt_dir / "model_latest.pt"
+    buffer_ckpt_path = ckpt_dir / "buffer_latest.pt"
+    state_ckpt_path = ckpt_dir / "state_latest.pt"
     
     env = MPEWrapper(cfg)
     eval_env = MPEWrapper(cfg, render_mode="rgb_array")
@@ -70,8 +77,21 @@ def train():
     agent = MATDMPC(cfg)
     buffer = ReplayBuffer(cfg)
     
+    start_step = 0
     episode_idx = 0
-    for step in range(0, cfg.train_steps + cfg.episode_length, cfg.episode_length):
+
+    # Resume処理
+    if getattr(cfg, "resume", False):
+        if model_ckpt_path.exists() and buffer_ckpt_path.exists() and state_ckpt_path.exists():
+            print(">>> Resuming training from checkpoints...")
+            agent.load(model_ckpt_path)
+            buffer.load(buffer_ckpt_path)
+            state = torch.load(state_ckpt_path)
+            start_step = state['step']
+            episode_idx = state['episode_idx']
+        else:
+            print(">>> Checkpoints not found. Starting from scratch.")
+    for step in range(start_step, cfg.train_steps + cfg.episode_length, cfg.episode_length):
         obs = env.reset()
         done = False
         t = 0
@@ -107,6 +127,19 @@ def train():
         if step % cfg.eval_freq == 0 and step > 0:
             eval_reward = evaluate(eval_env, agent, cfg.eval_episodes, step, log_dir ,save_gif=True)
             print(f">>> EVAL at Step {step}: Reward = {eval_reward}")
+
+        # チェックポイントの定期保存
+        if step > start_step and step % getattr(cfg, "save_freq", 50000) == 0:
+            print(f">>> Saving checkpoints at Step {step}...")
+            agent.save(model_ckpt_path)
+            buffer.save(buffer_ckpt_path)
+            torch.save({'step': step, 'episode_idx': episode_idx}, state_ckpt_path)
+
+    # 最終状態の保存
+    print(">>> Training complete. Saving final checkpoints...")
+    agent.save(model_ckpt_path)
+    buffer.save(buffer_ckpt_path)
+    torch.save({'step': cfg.train_steps, 'episode_idx': episode_idx}, state_ckpt_path)
 
 if __name__ == '__main__':
     train()

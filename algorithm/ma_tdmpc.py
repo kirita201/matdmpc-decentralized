@@ -315,3 +315,22 @@ class MATDMPC:
             'value_loss': value_loss.mean().detach(),
             'pi_loss': pi_loss.detach()
         }
+
+    def save(self, filepath):
+        """モデルとオプティマイザの状態を保存"""
+        state = {
+            'model': self.model.state_dict(),
+            'model_target': self.model_target.state_dict(),
+            'optim': self.optim.state_dict(),
+            'pi_optim': self.pi_optim.state_dict(),
+        }
+        torch.save(state, filepath)
+
+    def load(self, filepath):
+        """モデルとオプティマイザの状態を読み込み"""
+        checkpoint = torch.load(filepath, map_location=self.device)
+        self.model.load_state_dict(checkpoint['model'])
+        self.model_target.load_state_dict(checkpoint['model_target'])
+        self.optim.load_state_dict(checkpoint['optim'])
+        self.pi_optim.load_state_dict(checkpoint['pi_optim'])
+        print(f"[MATDMPC] Loaded model checkpoints from {filepath}")
