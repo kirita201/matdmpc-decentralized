@@ -56,9 +56,20 @@ consistency_coef: 2.0
 reward_coef: 0.5
 value_coef: 0.1
 
+# -------------------------------------------------------------------
+# 分散通信設定
+# -------------------------------------------------------------------
+# obs_range  : 環境の観測範囲（MPEWrapper に渡す。null でテーブルデフォルト値使用）
+# comm_range : アルゴリズム側の通信グラフ生成に使う距離閾値。
+#              null または .inf を指定すると全結合（ベースライン等価）になる。
+#              obs_range と comm_range は独立した概念であり、
+#              「観測できるが通信しない」設定も将来的に可能。
+#              典型的な実験では obs_range == comm_range == 1.0 を推奨。
+obs_range: null          # 例: 1.0  (null → MPEWrapperのテーブルデフォルト)
+comm_range: .inf         # 例: 1.0  (.inf → 全結合ベースライン)
+# -------------------------------------------------------------------
+
 # Prey Policy (predator_prey タスク時のみ使用)
-# prey_ckpt_path を省略すると checkpoints/prey_N{num_agents}.pt を自動検索する。
-# チェックポイントが存在しない場合はランダムポリシーにフォールバックし警告を表示。
 prey_ckpt_path: null       # 例: "checkpoints/prey_N6.pt"
 prey_noise_std: 0.05       # 推論時に加えるガウスノイズ (0 = 決定論的)
 

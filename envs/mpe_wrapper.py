@@ -601,6 +601,28 @@ class MPEWrapper:
     def render(self):
         return self.env.render()
 
+    @property
+    def comm_range(self):
+        """
+        アルゴリズム側が通信グラフ生成に使う距離閾値。
+        cfg.comm_range が設定されていればその値を返し、
+        なければ cfg.obs_range → テーブルデフォルト obs_range の順にフォールバックする。
+        """
+        # 1. cfg に comm_range が明示されていれば最優先
+        cr = getattr(self.cfg, 'comm_range', None)
+        if cr is not None:
+            return float(cr)
+        # 2. comm_range 未設定なら obs_range と同じとみなす
+        obs_r = getattr(self.cfg, 'obs_range', None)
+        if obs_r is not None:
+            return float(obs_r)
+        # 3. どちらも未設定 → タスク別テーブルのデフォルト obs_range を返す
+        if self._task == "spread":
+            return float(SPREAD_CONFIGS[self.N][0])
+        elif self._task == "predprey":
+            return float(PREDPREY_CONFIGS[self.N][2])
+        return float('inf')
+
 
 # ─────────────────────────────────────────────────────────
 # 設定ファクトリ: 論文の全実験タスクに対応する cfg を返す

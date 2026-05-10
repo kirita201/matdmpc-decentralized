@@ -69,3 +69,38 @@ def linear_schedule(schdl, step):
             mix = np.clip(step / duration, 0.0, 1.0)
             return (1.0 - mix) * init + mix * final
     raise NotImplementedError(schdl)
+
+def get_comm_graph(obs, comm_range, pos_slice=(2, 4)):
+    """
+    観測テンソルからエージェント間の通信可能性を示す隣接マスクを生成する。
+ 
+    各エージェントの絶対位置は obs の pos_slice インデックス範囲から取得する。
+    MPE の観測フォーマットは [vel(2), pos(2), ...] なので、デフォルト pos_slice=(2,4)。
+ 
+    Parameters
+    ----------
+    obs : Tensor, shape (..., N, obs_dim)
+        先頭次元は任意（B, B*N など）。N はエージェント数。
+    comm_range : float
+        通信可能距離の上限。float('inf') を渡せば全結合（ベースライン再現）。
+    pos_slice : tuple of (int, int)
+        obs の最終次元から位置座標を切り出すスライス範囲。
+ 
+    Returns
+    -------
+    adj_mask : BoolTensor, shape (..., N, N)
+        adj_mask[..., i, j] = True  ⟺  エージェント i から j へ通信可能
+        対角要素（自己）は常に True。
+    """
+    # 位置座標を抽出: (..., N, 2)
+    pos = obs[..., pos_slice[0]:pos_slice[1]]
+ 
+    # ペアワイズ距離: (..., N, N)
+    # pos_i - pos_j を計算するため次元を展開してブロードキャスト
+    diff = pos.unsqueeze(-2) - pos.unsqueeze(-3)   # (..., N, N, 2)
+    dist = torch.norm(diff, dim=-1)                # (..., N, N)
+ 
+    # 通信範囲以内 or 自己 → True
+    adj_mask = dist <= comm_range                  # (..., N, N)  対角は dist=0 なので常にTrue
+ 
+    return adj_mask
