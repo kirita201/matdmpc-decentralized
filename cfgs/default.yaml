@@ -64,5 +64,5 @@ prey_noise_std: 0.05       # 推論時に加えるガウスノイズ (0 = 決定
 
 # Checkpointing
 save_freq: 2000
-resume: false
+resume: true
 ckpt_dir: "checkpoints"
