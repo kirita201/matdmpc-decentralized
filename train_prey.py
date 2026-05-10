@@ -387,6 +387,8 @@ def train_prey(args):
             policy = agent.get_policy(device="cpu")
             policy.save(ckpt_path)
 
+            agent.actor.to(agent.device)
+
     # 最終保存
     ckpt_path = ckpt_dir / f"prey_N{args.N}.pt"
     policy = agent.get_policy(device="cpu")
