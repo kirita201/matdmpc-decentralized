@@ -13,7 +13,7 @@ action_dim: 5    # Discrete/Continuous mixed in MPE, assume continuous 5
 # Training
 train_steps: 500000
 episode_length: 25
-seed_steps: 1000
+seed_steps: 5000
 update_freq: 10
 action_repeat: 1
 eval_freq: 10000
@@ -63,6 +63,6 @@ prey_ckpt_path: null       # 例: "checkpoints/prey_N6.pt"
 prey_noise_std: 0.05       # 推論時に加えるガウスノイズ (0 = 決定論的)
 
 # Checkpointing
-save_freq: 2000
+save_freq: 50000
 resume: true
 ckpt_dir: "checkpoints"

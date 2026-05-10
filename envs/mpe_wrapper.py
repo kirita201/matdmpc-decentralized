@@ -94,7 +94,13 @@ class SpreadScenario(BaseScenario):
         rew = 0.0
         for lm in world.landmarks:
             dists = [np.linalg.norm(a.state.p_pos - lm.state.p_pos) for a in world.agents]
-            rew -= min(dists)
+            min_dist = min(dists)
+            rew -= min_dist
+
+            # 2. 占有ボーナス（ここを追加！）
+            # 距離が一定以下（例: 0.15）なら「カバーした」とみなして加点
+            if min_dist < 0.15: 
+                rew += 10.0
         return rew
 
     def observation(self, agent, world):
