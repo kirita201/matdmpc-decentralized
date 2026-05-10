@@ -100,7 +100,7 @@ class SpreadScenario(BaseScenario):
             # 2. 占有ボーナス（ここを追加！）
             # 距離が一定以下（例: 0.15）なら「カバーした」とみなして加点
             if min_dist < 0.15: 
-                rew += 10.0
+                rew += 1.0
         return rew
 
     def observation(self, agent, world):
