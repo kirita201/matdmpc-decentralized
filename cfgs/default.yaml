@@ -63,6 +63,6 @@ prey_ckpt_path: null       # 例: "checkpoints/prey_N6.pt"
 prey_noise_std: 0.05       # 推論時に加えるガウスノイズ (0 = 決定論的)
 
 # Checkpointing
-save_freq: 50000
+save_freq: 5000
 resume: true
 ckpt_dir: "checkpoints"
