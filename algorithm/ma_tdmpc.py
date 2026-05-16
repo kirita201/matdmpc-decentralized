@@ -423,9 +423,9 @@ class MATDMPC:
                 ).squeeze(-1)
 
             total_loss = (
-                self.cfg.consistency_coef * consistency_loss.clamp(max=1e4) +
-                self.cfg.reward_coef      * reward_loss.clamp(max=1e4) +
-                self.cfg.value_coef       * value_loss.clamp(max=1e4)
+                self.cfg.consistency_coef * consistency_loss +
+                self.cfg.reward_coef      * reward_loss +
+                self.cfg.value_coef       * value_loss
             )  # [B]
 
             weighted_loss = (total_loss * weights).mean()

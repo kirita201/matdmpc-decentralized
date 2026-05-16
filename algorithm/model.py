@@ -113,9 +113,11 @@ class MACLM(nn.Module):
         
         # 共通モジュール (全エージェントでパラメータ共有)
         self._encoder = h.mlp(cfg.obs_shape[0], cfg.enc_dim, cfg.latent_dim)
+        self._ln_enc = nn.LayerNorm(cfg.latent_dim)
         self._comm = TransformerComm(cfg)
         
         self._dynamics = h.mlp(cfg.latent_dim + cfg.action_dim, cfg.mlp_dim, cfg.latent_dim)
+        self._ln_dyn = nn.LayerNorm(cfg.latent_dim)
         self._reward = h.mlp(cfg.latent_dim + cfg.action_dim, cfg.mlp_dim, 1)
         
         self._pi = h.mlp(cfg.latent_dim, cfg.mlp_dim, cfg.action_dim)
@@ -135,7 +137,7 @@ class MACLM(nn.Module):
 
     def encode(self, obs):
         """obs: [B, N, obs_dim] -> e: [B, N, latent_dim]"""
-        return self._encoder(obs)
+        return self._ln_enc(self._encoder(obs))
 
     def communicate(self, e, a, adj_mask=None):
         """
@@ -186,7 +188,7 @@ class MACLM(nn.Module):
     def next(self, z, a):
         """z: [B, N, latent_dim], a: [B, N, action_dim]"""
         x = torch.cat([z, a], dim=-1)
-        return self._dynamics(x), self._reward(x).squeeze(-1) # return [B, N]
+        return self._ln_dyn(self._dynamics(x)), self._reward(x).squeeze(-1) # return [B, N]
 
     def pi(self, z, std=0):
         mu = (torch.tanh(self._pi(z)) + 1.0) / 2.0
