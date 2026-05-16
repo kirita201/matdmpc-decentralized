@@ -254,9 +254,9 @@ class MATDMPC:
                 value_loss += rho * (h.mse(q_joint1, td_target, reduce=False) + h.mse(q_joint2, td_target, reduce=False)).squeeze(-1)
                 priority_loss += rho * (h.l1(q_joint1, td_target, reduce=False) + h.l1(q_joint2, td_target, reduce=False)).squeeze(-1)
 
-            total_loss = self.cfg.consistency_coef * consistency_loss.clamp(max=1e4) + \
-                     self.cfg.reward_coef * reward_loss.clamp(max=1e4) + \
-                     self.cfg.value_coef * value_loss.clamp(max=1e4) # 形状: [B]
+            total_loss = self.cfg.consistency_coef * consistency_loss+ \
+                     self.cfg.reward_coef * reward_loss+ \
+                     self.cfg.value_coef * value_loss # 形状: [B]
         
             # PERの重みを各サンプルに掛けてからバッチ平均を取る
             weighted_loss = (total_loss * weights).mean()
