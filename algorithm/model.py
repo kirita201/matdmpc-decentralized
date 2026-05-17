@@ -44,10 +44,7 @@ class MixingNetwork(nn.Module):
             nn.Linear(state_dim, cfg.mlp_dim), nn.ELU(),
             nn.Linear(cfg.mlp_dim, cfg.mlp_dim * 1)
         )
-        self.hyper_b2 = nn.Sequential(
-            nn.Linear(state_dim, cfg.mlp_dim), nn.ELU(),
-            nn.Linear(cfg.mlp_dim, 1)
-        )
+        self.hyper_b2 = nn.Linear(state_dim, 1)
 
     def forward(self, q_values, global_state):
         # q_values: [B, N]
@@ -55,12 +52,12 @@ class MixingNetwork(nn.Module):
         B = q_values.size(0)
         q_values = q_values.view(B, 1, self.N)
         
-        w1 = self.hyper_w1(global_state).view(B, self.N, self.cfg.mlp_dim)
+        w1 = torch.abs(self.hyper_w1(global_state)).view(B, self.N, self.cfg.mlp_dim)
         b1 = self.hyper_b1(global_state).view(B, 1, self.cfg.mlp_dim)
         
         hidden = nn.functional.elu(torch.bmm(q_values, w1) + b1)
         
-        w2 = self.hyper_w2(global_state).view(B, self.cfg.mlp_dim, 1)
+        w2 = torch.abs(self.hyper_w2(global_state)).view(B, self.cfg.mlp_dim, 1)
         b2 = self.hyper_b2(global_state).view(B, 1, 1)
         
         q_tot = torch.bmm(hidden, w2) + b2
