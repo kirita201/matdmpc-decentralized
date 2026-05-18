@@ -124,16 +124,16 @@ def train():
         if episode_idx % 10 == 0:
             print(f"Step: {step}, Episode: {episode_idx}, Reward: {ep_reward}")
 
-        if step % cfg.eval_freq == 0 and step > 0:
-            eval_reward = evaluate(eval_env, agent, cfg.eval_episodes, step, log_dir ,save_gif=True)
-            print(f">>> EVAL at Step {step}: Reward = {eval_reward}")
-
         # チェックポイントの定期保存
         if step > start_step and step % getattr(cfg, "save_freq", 50000) == 0:
             print(f">>> Saving checkpoints at Step {step}...")
             agent.save(model_ckpt_path)
             buffer.save(buffer_ckpt_path)
             torch.save({'step': step, 'episode_idx': episode_idx}, state_ckpt_path)
+
+        if step % cfg.eval_freq == 0 and step > 0:
+            eval_reward = evaluate(eval_env, agent, cfg.eval_episodes, step, log_dir ,save_gif=True)
+            print(f">>> EVAL at Step {step}: Reward = {eval_reward}")
 
     # 最終状態の保存
     print(">>> Training complete. Saving final checkpoints...")
