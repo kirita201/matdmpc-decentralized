@@ -227,6 +227,19 @@ class PredatorPreyScenario(BaseScenario):
         for adv in self.adversaries(world):
             if self.is_collision(adv, agent):
                 rew -= 10.0
+        
+        # 2. 範囲外ペナルティ (標準仕様の復元)
+        # 座標の絶対値が 0.9 を超えるとペナルティが発生し、1.0 を超えると指数関数的に増大する
+        def bound(x):
+            if x < 0.9:
+                return 0.0
+            if x < 1.0:
+                return (x - 0.9) * 10.0
+            return min(np.exp(2 * x - 2), 10.0)
+            
+        for p in range(world.dim_p):
+            x = abs(agent.state.p_pos[p])
+            rew -= bound(x)
         return rew
 
     def observation(self, agent, world):
