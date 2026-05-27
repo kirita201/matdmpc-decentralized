@@ -249,7 +249,7 @@ class PreyACAgent:
 class PreyTrainEnv:
     """
     Prey 訓練専用の薄いラッパー。
-    - Adversary はランダム行動で固定
+    - Adversary は最も近い Prey を追尾する
     - Prey の観測・報酬・done を返す
     """
 
@@ -293,16 +293,45 @@ class PreyTrainEnv:
     def step(self, prey_actions: np.ndarray):
         """
         prey_actions: (n_prey, action_dim)
-        adversary は act_space.sample() で固定
+        adversary は最も近い Prey に向かって追尾行動をとる
         """
-        adv_idx  = 0
         prey_idx = 0
-        for agent in self._all_agents:
-            if "adversary" in agent:
-                act = self.env.env.action_space(agent).sample()
+        
+        # MPE の内部 world オブジェクトを取得 (エージェントの位置情報へアクセスするため)
+        world = self.env.env.unwrapped.world if hasattr(self.env.env, "unwrapped") else self.env.env.world
+
+        for agent_name in self._all_agents:
+            if "adversary" in agent_name:
+                # 該当する Adversary エージェントオブジェクトと、全 Prey を取得
+                adv_obj = next((a for a in world.agents if a.name == agent_name), None)
+                preys = [a for a in world.agents if not a.adversary]
+                
+                if adv_obj is not None and len(preys) > 0:
+                    # 最も距離が近い Prey を探す
+                    closest_prey = min(
+                        preys, 
+                        key=lambda p: np.linalg.norm(p.state.p_pos - adv_obj.state.p_pos)
+                    )
+                    
+                    # ターゲットへの相対ベクトルを計算して正規化
+                    delta_pos = closest_prey.state.p_pos - adv_obj.state.p_pos
+                    norm = np.linalg.norm(delta_pos)
+                    if norm > 1e-5:
+                        delta_pos = delta_pos / norm
+                    
+                    # 5次元の行動ベクトル [no_op, right, left, up, down] に変換
+                    act = np.zeros(5, dtype=np.float32)
+                    act[1] = max(0, delta_pos[0])   # Right (+x)
+                    act[2] = max(0, -delta_pos[0])  # Left (-x)
+                    act[3] = max(0, delta_pos[1])   # Up (+y)
+                    act[4] = max(0, -delta_pos[1])  # Down (-y)
+                else:
+                    # フォールバック (万が一オブジェクトが見つからない場合)
+                    act = self.env.env.action_space(agent_name).sample()
             else:
                 act = prey_actions[prey_idx]
                 prey_idx += 1
+                
             self.env.env.step(act)
 
         prey_obs     = self._get_prey_obs()
@@ -318,7 +347,6 @@ class PreyTrainEnv:
 
     def _get_prey_obs(self):
         return np.stack([self.env.env.observe(a) for a in self._prey_agents])
-
 
 # ─────────────────────────────────────────────────────────────
 # メイン: 訓練ループ
