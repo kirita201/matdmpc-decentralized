@@ -48,7 +48,7 @@ horizon_schedule: "linear(1, 5, 25000)"
 lr: 0.001
 grad_clip_norm: 10.0
 tau: 0.99 # Target EMA
-discount: 0.95 # Gamma
+discount: 0.99 # Gamma
 rho: 0.5 # Temporal decay factor
 
 # Loss Coefs
