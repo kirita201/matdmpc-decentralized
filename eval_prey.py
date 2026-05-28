@@ -85,10 +85,10 @@ def evaluate_prey(args):
                             delta_pos = delta_pos / norm
                         
                         act = np.zeros(5, dtype=np.float32)
-                        act[1] = max(0, delta_pos[0])
-                        act[2] = max(0, -delta_pos[0])
-                        act[3] = max(0, delta_pos[1])
-                        act[4] = max(0, -delta_pos[1])
+                        act[1] = -max(0, delta_pos[0])
+                        act[2] = -max(0, -delta_pos[0])
+                        act[3] = -max(0, delta_pos[1])
+                        act[4] = -max(0, -delta_pos[1])
                     else:
                         act = env.env.action_space(agent_name).sample()
                 else:
@@ -133,5 +133,5 @@ if __name__ == "__main__":
     args = parser.parse_args()
     
     evaluate_prey(args)
-    
+
 #python eval_prey.py --N 6 --episodes 10 --save_gif --gif_episodes 3
