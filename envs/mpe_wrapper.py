@@ -94,7 +94,13 @@ class SpreadScenario(BaseScenario):
         rew = 0.0
         for lm in world.landmarks:
             dists = [np.linalg.norm(a.state.p_pos - lm.state.p_pos) for a in world.agents]
-            rew -= min(dists)
+            min_dist = min(dists)
+            rew -= min_dist
+
+            # 2. 占有ボーナス（ここを追加！）
+            # 距離が一定以下（例: 0.15）なら「カバーした」とみなして加点
+            if min_dist < 0.15: 
+                rew += 1.0
         return rew
 
     def observation(self, agent, world):
@@ -221,6 +227,19 @@ class PredatorPreyScenario(BaseScenario):
         for adv in self.adversaries(world):
             if self.is_collision(adv, agent):
                 rew -= 10.0
+        
+        # 2. 範囲外ペナルティ (標準仕様の復元)
+        # 座標の絶対値が 0.9 を超えるとペナルティが発生し、1.0 を超えると指数関数的に増大する
+        def bound(x):
+            if x < 0.9:
+                return 0.0
+            if x < 1.0:
+                return (x - 0.9) * 10.0
+            return min(np.exp(2 * x - 2), 10.0)
+            
+        for p in range(world.dim_p):
+            x = abs(agent.state.p_pos[p])
+            rew -= bound(x)
         return rew
 
     def observation(self, agent, world):
@@ -600,28 +619,6 @@ class MPEWrapper:
     
     def render(self):
         return self.env.render()
-
-    @property
-    def comm_range(self):
-        """
-        アルゴリズム側が通信グラフ生成に使う距離閾値。
-        cfg.comm_range が設定されていればその値を返し、
-        なければ cfg.obs_range → テーブルデフォルト obs_range の順にフォールバックする。
-        """
-        # 1. cfg に comm_range が明示されていれば最優先
-        cr = getattr(self.cfg, 'comm_range', None)
-        if cr is not None:
-            return float(cr)
-        # 2. comm_range 未設定なら obs_range と同じとみなす
-        obs_r = getattr(self.cfg, 'obs_range', None)
-        if obs_r is not None:
-            return float(obs_r)
-        # 3. どちらも未設定 → タスク別テーブルのデフォルト obs_range を返す
-        if self._task == "spread":
-            return float(SPREAD_CONFIGS[self.N][0])
-        elif self._task == "predprey":
-            return float(PREDPREY_CONFIGS[self.N][2])
-        return float('inf')
 
 
 # ─────────────────────────────────────────────────────────
