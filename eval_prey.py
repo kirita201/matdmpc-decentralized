@@ -1,4 +1,8 @@
 # eval_prey.py
+import os
+# Google Colab等のヘッドレス環境でPygameのエラーを防ぐおまじない
+os.environ["SDL_VIDEODRIVER"] = "dummy"
+
 import argparse
 import torch
 import numpy as np
@@ -30,8 +34,12 @@ def evaluate_prey(args):
     obs_dim = prey_obs_sample.shape[0]
     action_dim = env.env.action_space(prey_agents[0]).shape[0]
 
-    # モデルのロード
-    ckpt_path = Path(args.ckpt)
+    # チェックポイントパスの動的解決 (args.ckptが指定されていなければNから推定)
+    if args.ckpt is not None:
+        ckpt_path = Path(args.ckpt)
+    else:
+        ckpt_path = Path(f"checkpoints/prey_N{args.N}.pt")
+
     if ckpt_path.exists():
         print(f">>> Loading Prey checkpoint from {ckpt_path}")
         policy = PreyPolicy.load(ckpt_path, device="cpu", noise_std=0.0)
@@ -120,11 +128,10 @@ if __name__ == "__main__":
     parser.add_argument("--episode_length", type=int, default=25, help="1エピソードの長さ")
     parser.add_argument("--save_gif", action="store_true", help="GIFを保存するかどうか")
     parser.add_argument("--gif_episodes", type=int, default=1, help="GIFとして保存するエピソード数 (先頭からN個)")
-    parser.add_argument("--ckpt", type=str, default="checkpoints/prey_N6.pt", help="Preyのチェックポイントパス")
+    # 初期値をNoneにして、スクリプト内で動的に N の数からパスを作るように変更
+    parser.add_argument("--ckpt", type=str, default=None, help="Preyのチェックポイントパス")
     args = parser.parse_args()
     
     evaluate_prey(args)
-
-
-
+    
 #python eval_prey.py --N 6 --episodes 10 --save_gif --gif_episodes 3

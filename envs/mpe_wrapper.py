@@ -196,6 +196,7 @@ class PredatorPreyScenario(BaseScenario):
             agent.state.p_vel = np.zeros(world.dim_p)
             agent.state.c = np.zeros(world.dim_c)
         for lm in world.landmarks:
+            lm.color = np.array([0.25, 0.25, 0.25])
             lm.state.p_pos = np_random.uniform(-0.9, 0.9, world.dim_p)
             lm.state.p_vel = np.zeros(world.dim_p)
 
