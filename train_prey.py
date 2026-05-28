@@ -313,18 +313,18 @@ class PreyTrainEnv:
                         key=lambda p: np.linalg.norm(p.state.p_pos - adv_obj.state.p_pos)
                     )
                     
-                    # ターゲットへの相対ベクトルを計算して正規化
+                    # ターゲットへの相対ベクトルを計算してスケーリング
                     delta_pos = closest_prey.state.p_pos - adv_obj.state.p_pos
-                    norm = np.linalg.norm(delta_pos)
-                    if norm > 1e-5:
-                        delta_pos = delta_pos / norm
+                    scale = max(abs(delta_pos[0]), abs(delta_pos[1]))
+                    if scale > 1e-5:
+                        delta_pos = delta_pos / scale
                     
-                    # 5次元の行動ベクトル [no_op, right, left, up, down] に変換
+                    # 5次元の行動ベクトル [no_op, left, right, down, up] に変換
                     act = np.zeros(5, dtype=np.float32)
-                    act[1] = max(0, delta_pos[0])   # Right (+x)
-                    act[2] = max(0, -delta_pos[0])  # Left (-x)
-                    act[3] = max(0, delta_pos[1])   # Up (+y)
-                    act[4] = max(0, -delta_pos[1])  # Down (-y)
+                    act[1] = max(0, -delta_pos[0])  # Left (-x)
+                    act[2] = max(0,  delta_pos[0])  # Right (+x)
+                    act[3] = max(0, -delta_pos[1])  # Down (-y)
+                    act[4] = max(0,  delta_pos[1])  # Up (+y)
                 else:
                     # フォールバック (万が一オブジェクトが見つからない場合)
                     act = self.env.env.action_space(agent_name).sample()
