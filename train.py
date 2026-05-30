@@ -121,7 +121,7 @@ def train():
                         writer.add_scalar(f"Loss/{loss_name}", loss_val.item(), step + i)
 
         episode_idx += 1
-        if episode_idx % 10 == 0:
+        if episode_idx % 5 == 0:
             print(f"Step: {step}, Episode: {episode_idx}, Reward: {ep_reward}")
 
         # チェックポイントの定期保存
