@@ -619,6 +619,7 @@ class MPEWrapper:
         return np.stack([self.env.observe(a) for a in self.agents])
     
     def render(self):
+        self.env.unwrapped.cam_range = 2.0
         return self.env.render()
 
 
