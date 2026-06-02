@@ -435,7 +435,7 @@ if __name__ == "__main__":
                         help="Number of adversaries (3 / 6 / 15)")
     parser.add_argument("--steps",        type=int,   default=300_000,
                         help="Total training steps")
-    parser.add_argument("--episode_length", type=int, default=25)
+    parser.add_argument("--episode_length", type=int, default=50)
     parser.add_argument("--device",       type=str,   default="cuda",
                         help="cuda or cpu")
     parser.add_argument("--lr",           type=float, default=3e-4)
