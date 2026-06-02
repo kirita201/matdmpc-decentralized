@@ -111,7 +111,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Evaluate Prey Agent")
     parser.add_argument("--N", type=int, default=6, help="Adversary数 (3, 6, 15)")
     parser.add_argument("--episodes", type=int, default=10, help="評価するトータルエピソード数")
-    parser.add_argument("--episode_length", type=int, default=25, help="1エピソードの長さ")
+    parser.add_argument("--episode_length", type=int, default=50, help="1エピソードの長さ")
     parser.add_argument("--save_gif", action="store_true", help="GIFを保存するかどうか")
     parser.add_argument("--gif_episodes", type=int, default=1, help="GIFとして保存するエピソード数")
     parser.add_argument("--ckpt", type=str, default=None, help="Preyのチェックポイントパス")
