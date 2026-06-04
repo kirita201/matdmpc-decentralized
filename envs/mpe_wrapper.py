@@ -218,9 +218,11 @@ class PredatorPreyScenario(BaseScenario):
 
     def _adversary_reward(self, agent, world):
         rew = 0.0
-        for prey in self.good_agents(world):
-            if self.is_collision(agent, prey):
-                rew += 10.0
+        # チームの「誰か」が捕まえたら全員に加点する
+        for adv in self.adversaries(world):
+            for prey in self.good_agents(world):
+                if self.is_collision(adv, prey):
+                    rew += 10.0
         return rew
 
     def _agent_reward(self, agent, world):
