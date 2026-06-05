@@ -246,59 +246,113 @@ class PredatorPreyScenario(BaseScenario):
         return rew
 
     def observation(self, agent, world):
-        # ── 障害物: 近い順に n_vis_lm 個 ──
-        lm_rel = sorted(
-            [(np.linalg.norm(lm.state.p_pos - agent.state.p_pos),
-              lm.state.p_pos - agent.state.p_pos)
-             for lm in world.landmarks if not lm.boundary],
-            key=lambda x: x[0]
-        )
-        lm_obs = []
-        for i in range(self.n_vis_lm):
-            if i < len(lm_rel) and lm_rel[i][0] <= self.obs_range:
-                lm_obs.append(lm_rel[i][1])
-            else:
-                lm_obs.append(np.zeros(world.dim_p))
+        if not agent.adversary:
+            # ─────────────────────────────────────────────────────────
+            # 獲物 (Prey) 側の完全観測ロジック
+            # ・観測距離制限なし
+            # ・観測エンティティ数の制限なし（すべて観測）
+            # ・自分自身を他エージェントの観測対象から除外
+            # ─────────────────────────────────────────────────────────
+            
+            # ── 障害物 (すべて) ──
+            lm_obs = sorted(
+                [lm.state.p_pos - agent.state.p_pos
+                 for lm in world.landmarks if not lm.boundary],
+                key=lambda x: np.linalg.norm(x)
+            )
 
-        # ── 他の捕食者 ──
-        other_adv = sorted(
-            [(np.linalg.norm(other.state.p_pos - agent.state.p_pos),
-              other.state.p_pos - agent.state.p_pos)
-             for other in self.adversaries(world) if other is not agent],
-            key=lambda x: x[0]
-        )
-        adv_obs = []
-        for i in range(self.n_vis_adv):
-            if i < len(other_adv) and other_adv[i][0] <= self.obs_range:
-                adv_obs.append(other_adv[i][1])
-            else:
-                adv_obs.append(np.zeros(world.dim_p))
+            # ── 捕食者 (すべて) ──
+            adv_obs = sorted(
+                [other.state.p_pos - agent.state.p_pos
+                 for other in self.adversaries(world)],
+                key=lambda x: np.linalg.norm(x)
+            )
 
-        # ── 獲物: 位置 + 速度 ──
-        prey_list = sorted(
-            [(np.linalg.norm(p.state.p_pos - agent.state.p_pos),
-              p.state.p_pos - agent.state.p_pos,
-              p.state.p_vel)
-             for p in self.good_agents(world)],
-            key=lambda x: x[0]
-        )
-        prey_pos_obs = []
-        prey_vel_obs = []
-        for i in range(self.n_vis_prey):
-            if i < len(prey_list) and prey_list[i][0] <= self.obs_range:
-                prey_pos_obs.append(prey_list[i][1])
-                prey_vel_obs.append(prey_list[i][2])
-            else:
-                prey_pos_obs.append(np.zeros(world.dim_p))
-                prey_vel_obs.append(np.zeros(world.dim_p))
+            # ── 他の獲物 (自分以外すべて) ──
+            # 自分自身 (p is not agent) を除外し、位置と速度を取得
+            prey_list = sorted(
+                [(p.state.p_pos - agent.state.p_pos, p.state.p_vel)
+                 for p in self.good_agents(world) if p is not agent],
+                key=lambda x: np.linalg.norm(x[0])
+            )
+            prey_pos_obs = [p[0] for p in prey_list]
+            prey_vel_obs = [p[1] for p in prey_list]
 
-        return np.concatenate(
-            [agent.state.p_vel, agent.state.p_pos]
-            + lm_obs
-            + adv_obs
-            + prey_pos_obs
-            + prey_vel_obs
-        )
+            # 制限やゼロパディングを行わず、すべての情報を結合して返す
+            return np.concatenate(
+                [agent.state.p_vel, agent.state.p_pos]
+                + lm_obs
+                + adv_obs
+                + prey_pos_obs
+                + prey_vel_obs
+            )
+
+        else:
+            # ─────────────────────────────────────────────────────────
+            # 捕食者 (Adversary) 側の部分観測ロジック
+            # ─────────────────────────────────────────────────────────
+            
+            # 【追加】範囲外パディング用のダミー値
+            # 位置は「遠く離れた場所」、速度は「停止状態」とする
+            dummy_pos = np.full(world.dim_p, 10.0)
+            dummy_vel = np.zeros(world.dim_p)
+            
+            # ── 障害物: 近い順に n_vis_lm 個 ──
+            lm_rel = sorted(
+                [(np.linalg.norm(lm.state.p_pos - agent.state.p_pos),
+                  lm.state.p_pos - agent.state.p_pos)
+                 for lm in world.landmarks if not lm.boundary],
+                key=lambda x: x[0]
+            )
+            lm_obs = []
+            for i in range(self.n_vis_lm):
+                if i < len(lm_rel) and lm_rel[i][0] <= self.obs_range:
+                    lm_obs.append(lm_rel[i][1])
+                else:
+                    # 【修正】ゼロではなくダミー座標でパディング
+                    lm_obs.append(dummy_pos)
+
+            # ── 他の捕食者 ──
+            other_adv = sorted(
+                [(np.linalg.norm(other.state.p_pos - agent.state.p_pos),
+                  other.state.p_pos - agent.state.p_pos)
+                 for other in self.adversaries(world) if other is not agent],
+                key=lambda x: x[0]
+            )
+            adv_obs = []
+            for i in range(self.n_vis_adv):
+                if i < len(other_adv) and other_adv[i][0] <= self.obs_range:
+                    adv_obs.append(other_adv[i][1])
+                else:
+                    # 【修正】ゼロではなくダミー座標でパディング
+                    adv_obs.append(dummy_pos)
+
+            # ── 獲物: 位置 + 速度 ──
+            prey_list = sorted(
+                [(np.linalg.norm(p.state.p_pos - agent.state.p_pos),
+                  p.state.p_pos - agent.state.p_pos,
+                  p.state.p_vel)
+                 for p in self.good_agents(world)],
+                key=lambda x: x[0]
+            )
+            prey_pos_obs = []
+            prey_vel_obs = []
+            for i in range(self.n_vis_prey):
+                if i < len(prey_list) and prey_list[i][0] <= self.obs_range:
+                    prey_pos_obs.append(prey_list[i][1])
+                    prey_vel_obs.append(prey_list[i][2])
+                else:
+                    # 【修正】位置はダミー座標、速度はゼロでパディング
+                    prey_pos_obs.append(dummy_pos)
+                    prey_vel_obs.append(dummy_vel)
+
+            return np.concatenate(
+                [agent.state.p_vel, agent.state.p_pos]
+                + lm_obs
+                + adv_obs
+                + prey_pos_obs
+                + prey_vel_obs
+            )
 
 
 # ─────────────────────────────────────────────────────────

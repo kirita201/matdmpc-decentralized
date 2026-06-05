@@ -95,4 +95,4 @@ if __name__ == "__main__":
     evaluate_main(args)
 
 
-#python eval_main.py --episodes 20 --save_gif --gif_episodes 5
+#python eval_main.py --episodes 10 --save_gif --gif_episodes 5
