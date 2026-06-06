@@ -119,4 +119,4 @@ if __name__ == "__main__":
     
     evaluate_prey(args)
 
-#python eval_prey.py --N 6 --episodes 10 --save_gif --gif_episodes 3
+#python eval_prey.py --N 3 --episodes 10 --save_gif --gif_episodes 3

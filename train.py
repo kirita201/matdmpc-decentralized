@@ -91,7 +91,22 @@ def train():
             episode_idx = state['episode_idx']
         else:
             print(">>> Checkpoints not found. Starting from scratch.")
+
+
+    # 元々のノイズ値（設定ファイルから取得、デフォルトは0.0）
+    base_noise = getattr(cfg, "prey_noise_std", 0.0)
+    initial_extra_noise = 1.0  # カリキュラムのために初期に上乗せするノイズ量
+    decay_steps = cfg.train_steps * 0.3  # 例: 全体の半分のステップをかけて減衰
+    
     for step in range(start_step, cfg.train_steps + cfg.episode_length, cfg.episode_length):
+
+        # ── カリキュラム：追加ノイズを徐々に減らし、base_noiseに漸近させる ──
+        decay_ratio = max(0.0, 1.0 - (step / decay_steps))
+        current_noise = base_noise + (initial_extra_noise * decay_ratio)
+        # 環境内の PreyPolicy のノイズ値を更新
+        if hasattr(env, "_prey_policy"):
+            env._prey_policy.noise_std = current_noise
+
         obs = env.reset()
         done = False
         t = 0
