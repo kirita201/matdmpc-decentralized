@@ -95,7 +95,7 @@ def train():
 
     # 元々のノイズ値（設定ファイルから取得、デフォルトは0.0）
     base_noise = getattr(cfg, "prey_noise_std", 0.0)
-    initial_extra_noise = 2.0  # カリキュラムのために初期に上乗せするノイズ量
+    initial_extra_noise = 1.5  # カリキュラムのために初期に上乗せするノイズ量
     decay_steps = cfg.train_steps * 0.3  # 例: 全体の半分のステップをかけて減衰
 
     for step in range(start_step, cfg.train_steps + cfg.episode_length, cfg.episode_length):
