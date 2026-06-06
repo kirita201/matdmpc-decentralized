@@ -395,7 +395,7 @@ def train_prey(args):
 
         while not done:
             actions = agent.act(obs, explore=True)
-            next_obs, rewards, done, _ = env.step(actions,total_steps)
+            next_obs, rewards, done, _ = env.step(actions)
             agent.store(obs, actions, rewards, done)
             obs = next_obs
             ep_reward += float(rewards.mean())
