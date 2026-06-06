@@ -227,9 +227,19 @@ class PredatorPreyScenario(BaseScenario):
 
     def _agent_reward(self, agent, world):
         rew = 0.0
+
+        # 捕食者リスト取得
+        advs = self.adversaries(world)
+        dists = [np.linalg.norm(a.state.p_pos - agent.state.p_pos) for a in advs]
+        min_dist = min(dists)
+        
+        # 1. 距離報酬: 捕食者と離れるとプラス (上限 1.0)
+        # 距離が 1.0 以上離れていれば報酬が頭打ちになるように設定
+        rew += min(min_dist, 1.0)
+
         for adv in self.adversaries(world):
             if self.is_collision(adv, agent):
-                rew -= 10.0
+                rew -= 5.0
         
         # 2. 範囲外ペナルティ (標準仕様の復元)
         # 座標の絶対値が 0.9 を超えるとペナルティが発生し、1.0 を超えると指数関数的に増大する

@@ -290,11 +290,12 @@ class PreyTrainEnv:
         self.env.env.reset()
         return self._get_prey_obs()
 
-    def step(self, prey_actions: np.ndarray):
+    def step(self, prey_actions: np.ndarray,total_steps: int = 0):
         """
         prey_actions: (n_prey, action_dim)
         adversary は最も近い Prey に向かって追尾行動をとる
         """
+        is_random = (total_steps < 200000) and (np.random.rand() < 0.3)
         prey_idx = 0
         
         # MPE の内部 world オブジェクトを取得 (エージェントの位置情報へアクセスするため)
@@ -307,24 +308,29 @@ class PreyTrainEnv:
                 preys = [a for a in world.agents if not a.adversary]
                 
                 if adv_obj is not None and len(preys) > 0:
-                    # 最も距離が近い Prey を探す
-                    closest_prey = min(
-                        preys, 
-                        key=lambda p: np.linalg.norm(p.state.p_pos - adv_obj.state.p_pos)
-                    )
-                    
-                    # ターゲットへの相対ベクトルを計算してスケーリング
-                    delta_pos = closest_prey.state.p_pos - adv_obj.state.p_pos
-                    scale = max(abs(delta_pos[0]), abs(delta_pos[1]))
-                    if scale > 1e-5:
-                        delta_pos = delta_pos / scale
-                    
-                    # 5次元の行動ベクトル [no_op, left, right, down, up] に変換
-                    act = np.zeros(5, dtype=np.float32)
-                    act[1] = max(0, -delta_pos[0])  # Left (-x)
-                    act[2] = max(0,  delta_pos[0])  # Right (+x)
-                    act[3] = max(0, -delta_pos[1])  # Down (-y)
-                    act[4] = max(0,  delta_pos[1])  # Up (+y)
+                    if is_random:
+                        # ランダムな方向へ移動
+                        act = np.zeros(5, dtype=np.float32)
+                        act[np.random.randint(1, 5)] = 1.0
+                    else:
+                        # 最も距離が近い Prey を探す
+                        closest_prey = min(
+                            preys, 
+                            key=lambda p: np.linalg.norm(p.state.p_pos - adv_obj.state.p_pos)
+                        )
+                        
+                        # ターゲットへの相対ベクトルを計算してスケーリング
+                        delta_pos = closest_prey.state.p_pos - adv_obj.state.p_pos
+                        scale = max(abs(delta_pos[0]), abs(delta_pos[1]))
+                        if scale > 1e-5:
+                            delta_pos = delta_pos / scale
+                        
+                        # 5次元の行動ベクトル [no_op, left, right, down, up] に変換
+                        act = np.zeros(5, dtype=np.float32)
+                        act[1] = max(0, -delta_pos[0])  # Left (-x)
+                        act[2] = max(0,  delta_pos[0])  # Right (+x)
+                        act[3] = max(0, -delta_pos[1])  # Down (-y)
+                        act[4] = max(0,  delta_pos[1])  # Up (+y)
                 else:
                     # フォールバック (万が一オブジェクトが見つからない場合)
                     act = self.env.env.action_space(agent_name).sample()
@@ -388,7 +394,7 @@ def train_prey(args):
 
         while not done:
             actions = agent.act(obs, explore=True)
-            next_obs, rewards, done, _ = env.step(actions)
+            next_obs, rewards, done, _ = env.step(actions,total_steps)
             agent.store(obs, actions, rewards, done)
             obs = next_obs
             ep_reward += float(rewards.mean())
