@@ -281,6 +281,9 @@ class PreyTrainEnv:
         self.obs_dim    = prey_obs_sample.shape[0]
         self.action_dim = self.env.env.action_space(self._prey_agents[0]).shape[0]
 
+        # モード保持用フラグ
+        self.chase_mode = True
+
         print(
             f"[PreyTrainEnv] N_adv={N}, n_prey={num_good}, "
             f"prey_obs_dim={self.obs_dim}, action_dim={self.action_dim}"
@@ -288,14 +291,15 @@ class PreyTrainEnv:
 
     def reset(self):
         self.env.env.reset()
+        self.chase_mode = random.random() < 0.5
         return self._get_prey_obs()
 
-    def step(self, prey_actions: np.ndarray, total_steps: int = 0):
+    def step(self, prey_actions: np.ndarray):
         """
         prey_actions: (n_prey, action_dim)
         adversary は最も近い Prey に向かって追尾行動をとる
         """
-        is_random = (total_steps < 200000) and (np.random.rand() < 0.3)
+
         prey_idx = 0
         
         # MPE の内部 world オブジェクトを取得 (エージェントの位置情報へアクセスするため)
@@ -307,30 +311,27 @@ class PreyTrainEnv:
                 adv_obj = next((a for a in world.agents if a.name == agent_name), None)
                 preys = [a for a in world.agents if not a.adversary]
                 
-                if adv_obj is not None and len(preys) > 0:
-                    if is_random:
-                        # ランダムな方向へ移動
-                        act = np.zeros(5, dtype=np.float32)
-                        act[np.random.randint(1, 5)] = 1.0
-                    else:
-                        # 最も距離が近い Prey を探す
-                        closest_prey = min(
-                            preys, 
-                            key=lambda p: np.linalg.norm(p.state.p_pos - adv_obj.state.p_pos)
-                        )
-                        
-                        # ターゲットへの相対ベクトルを計算して正規化
-                        delta_pos = closest_prey.state.p_pos - adv_obj.state.p_pos
-                        norm = np.linalg.norm(delta_pos)
-                        if norm > 1e-5:
-                            delta_pos = delta_pos / norm
-                        
-                        # 5次元の行動ベクトル [no_op, right, left, up, down] に変換
-                        act = np.zeros(5, dtype=np.float32)
-                        act[1] = max(0, delta_pos[0])   # Right (+x)
-                        act[2] = max(0, -delta_pos[0])  # Left (-x)
-                        act[3] = max(0, delta_pos[1])   # Up (+y)
-                        act[4] = max(0, -delta_pos[1])  # Down (-y)
+                if self.chase_mode and adv_obj is not None and len(preys) > 0:
+                   
+                
+                    # 最も距離が近い Prey を探す
+                    closest_prey = min(
+                        preys, 
+                        key=lambda p: np.linalg.norm(p.state.p_pos - adv_obj.state.p_pos)
+                    )
+                    
+                    # ターゲットへの相対ベクトルを計算してスケーリング
+                    delta_pos = closest_prey.state.p_pos - adv_obj.state.p_pos
+                    scale = max(abs(delta_pos[0]), abs(delta_pos[1]))
+                    if scale > 1e-5:
+                        delta_pos = delta_pos / scale
+                    
+                    # 5次元の行動ベクトル [no_op, left, right, down, up] に変換
+                    act = np.zeros(5, dtype=np.float32)
+                    act[1] = max(0, -delta_pos[0])  # Left (-x)
+                    act[2] = max(0,  delta_pos[0])  # Right (+x)
+                    act[3] = max(0, -delta_pos[1])  # Down (-y)
+                    act[4] = max(0,  delta_pos[1])  # Up (+y)
                 else:
                     # フォールバック (万が一オブジェクトが見つからない場合)
                     act = self.env.env.action_space(agent_name).sample()
@@ -394,7 +395,7 @@ def train_prey(args):
 
         while not done:
             actions = agent.act(obs, explore=True)
-            next_obs, rewards, done, _ = env.step(actions,total_steps)
+            next_obs, rewards, done, _ = env.step(actions)
             agent.store(obs, actions, rewards, done)
             obs = next_obs
             ep_reward += float(rewards.mean())
@@ -441,7 +442,7 @@ if __name__ == "__main__":
                         help="Number of adversaries (3 / 6 / 15)")
     parser.add_argument("--steps",        type=int,   default=300_000,
                         help="Total training steps")
-    parser.add_argument("--episode_length", type=int, default=25)
+    parser.add_argument("--episode_length", type=int, default=50)
     parser.add_argument("--device",       type=str,   default="cuda",
                         help="cuda or cpu")
     parser.add_argument("--lr",           type=float, default=3e-4)
