@@ -291,7 +291,7 @@ class PreyTrainEnv:
 
     def reset(self):
         self.env.env.reset()
-        self.chase_mode = random.random() < 0.5
+        self.chase_mode = random.random() < 0.6
         return self._get_prey_obs()
 
     def step(self, prey_actions: np.ndarray):
