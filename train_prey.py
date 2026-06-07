@@ -333,7 +333,7 @@ class PreyTrainEnv:
                     act[3] = max(0, -delta_pos[1])  # Down (-y)
                     act[4] = max(0,  delta_pos[1])  # Up (+y)
                 else:
-                    # フォールバック (万が一オブジェクトが見つからない場合)
+                    # ランダムモード&フォールバック (万が一オブジェクトが見つからない場合)
                     act = self.env.env.action_space(agent_name).sample()
             else:
                 act = prey_actions[prey_idx]
