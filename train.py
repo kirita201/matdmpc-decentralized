@@ -107,6 +107,9 @@ def train():
         if hasattr(env, "_prey_policy"):
             env._prey_policy.noise_std = current_noise
 
+        if hasattr(eval_env, "_prey_policy"):
+            eval_env._prey_policy.noise_std = current_noise
+
         obs = env.reset()
         done = False
         t = 0
