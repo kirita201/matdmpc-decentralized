@@ -670,7 +670,7 @@ class MPEWrapper:
             # 行動をブレンド
             prey_actions = (1.0 - random_ratio) * prey_actions + random_ratio * random_actions
 
-            prey_actions = np.clip(prey_actions, 0.0, 1.0)
+            prey_actions = np.clip(prey_actions, 0.0, 1.0).astype(np.float32)
 
         adv_idx  = 0
         prey_idx = 0
