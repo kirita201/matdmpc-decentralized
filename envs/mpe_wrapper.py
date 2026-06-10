@@ -666,7 +666,7 @@ class MPEWrapper:
         random_ratio = getattr(self, "random_ratio", 0.0)
         if random_ratio > 0.0:
             # [-1, 1] の一様乱数（完全ランダム行動）を生成
-            random_actions = np.random.uniform(-1.0, 1.0, size=prey_actions.shape)
+            random_actions = np.random.uniform(0.0, 1.0, size=prey_actions.shape)
             # 行動をブレンド
             prey_actions = (1.0 - random_ratio) * prey_actions + random_ratio * random_actions
 
