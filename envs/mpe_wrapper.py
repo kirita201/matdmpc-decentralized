@@ -525,6 +525,8 @@ class MPEWrapper:
         ).shape[0]                              # e.g., 5
         self.env.reset()
 
+        self.random_ratio = 0.0  # デフォルトは本来のポリシー100%
+
         print(
             f"[MPEWrapper] task={task}, N={self.N}, "
             f"obs_shape={self.obs_shape}, action_dim={self.action_dim}"
@@ -659,6 +661,14 @@ class MPEWrapper:
         # 獲物の現在観測を取得してポリシーで行動決定
         prey_obs = np.stack([self.env.observe(a) for a in self._prey_agents])
         prey_actions = self._prey_policy.act(prey_obs)  # [n_prey, action_dim]
+
+        # ──【追加】デフォルト 0.0 の random_ratio を使ってブレンド ──
+        random_ratio = getattr(self, "random_ratio", 0.0)
+        if random_ratio > 0.0:
+            # [-1, 1] の一様乱数（完全ランダム行動）を生成
+            random_actions = np.random.uniform(-1.0, 1.0, size=prey_actions.shape)
+            # 行動をブレンド
+            prey_actions = (1.0 - random_ratio) * prey_actions + random_ratio * random_actions
 
         adv_idx  = 0
         prey_idx = 0

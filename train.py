@@ -93,22 +93,19 @@ def train():
             print(">>> Checkpoints not found. Starting from scratch.")
 
 
-    # 元々のノイズ値（設定ファイルから取得、デフォルトは0.0）
-    base_noise = getattr(cfg, "prey_noise_std", 0.0)
-    initial_extra_noise = 1.0  # カリキュラムのために初期に上乗せするノイズ量
-    decay_steps = cfg.train_steps * 0.4  # 例: 全体の半分のステップをかけて減衰
+    # カリキュラム設定（ノイズではなくランダム割合として扱う）
+    initial_random_ratio = 0.8  # 初期は80%ランダム、20%本来のポリシー
+    decay_steps = cfg.train_steps * 0.4
 
     for step in range(start_step, cfg.train_steps + cfg.episode_length, cfg.episode_length):
 
-        # ── カリキュラム：追加ノイズを徐々に減らし、base_noiseに漸近させる ──
+        # ── カリキュラム：ランダム割合を徐々に減らし、0.0（デフォルト）に漸近させる ──
         decay_ratio = max(0.0, 1.0 - (step / decay_steps))
-        current_noise = base_noise + (initial_extra_noise * decay_ratio)
-        # 環境内の PreyPolicy のノイズ値を更新
-        if hasattr(env, "_prey_policy"):
-            env._prey_policy.noise_std = current_noise
-
-        if hasattr(eval_env, "_prey_policy"):
-            eval_env._prey_policy.noise_std = current_noise
+        current_ratio = initial_random_ratio * decay_ratio
+        
+        # 環境（MPEWrapper）のプロパティを直接書き換える
+        env.random_ratio = current_ratio
+        eval_env.random_ratio = current_ratio
 
         obs = env.reset()
         done = False
