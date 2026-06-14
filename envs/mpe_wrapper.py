@@ -304,7 +304,7 @@ class PredatorPreyScenario(BaseScenario):
             
             # 【追加】範囲外パディング用のダミー値
             # 位置は「遠く離れた場所」、速度は「停止状態」とする
-            dummy_pos = np.full(world.dim_p, 10.0)
+            dummy_pos = np.full(world.dim_p, 1.5)
             dummy_vel = np.zeros(world.dim_p)
             
             # ── 障害物: 近い順に n_vis_lm 個 ──
