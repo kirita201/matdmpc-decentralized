@@ -95,7 +95,7 @@ def train():
 
     # カリキュラム設定（ノイズではなくランダム割合として扱う）
     initial_random_ratio = 0.8  # 初期は80%ランダム、20%本来のポリシー
-    decay_steps = cfg.train_steps * 0.4
+    decay_steps = cfg.train_steps * 0.3
 
     for step in range(start_step, cfg.train_steps + cfg.episode_length, cfg.episode_length):
 
