@@ -281,8 +281,13 @@ class PreyTrainEnv:
         self.obs_dim    = prey_obs_sample.shape[0]
         self.action_dim = self.env.env.action_space(self._prey_agents[0]).shape[0]
 
-        # モード保持用フラグ
-        self.chase_mode = True
+        # 既存のフラグは削除し、アドバーサリのリストを明確に保持
+        self._all_agents = self.env._all_agents
+        self._prey_agents = [a for a in self._all_agents if "adversary" not in a]
+        self._adv_agents  = [a for a in self._all_agents if "adversary" in a]
+        
+        # 各エージェントのモードを保持する辞書を準備
+        self.adv_modes = {}
 
         print(
             f"[PreyTrainEnv] N_adv={N}, n_prey={num_good}, "
@@ -291,7 +296,9 @@ class PreyTrainEnv:
 
     def reset(self):
         self.env.env.reset()
-        self.chase_mode = random.random() < 0.6
+        self.adv_modes = {
+            agent_name: (random.random() < 0.6) for agent_name in self._adv_agents
+        }
         return self._get_prey_obs()
 
     def step(self, prey_actions: np.ndarray):
@@ -311,9 +318,7 @@ class PreyTrainEnv:
                 adv_obj = next((a for a in world.agents if a.name == agent_name), None)
                 preys = [a for a in world.agents if not a.adversary]
                 
-                if self.chase_mode and adv_obj is not None and len(preys) > 0:
-                   
-                
+                if self.adv_modes.get(agent_name, False) and adv_obj is not None and len(preys) > 0:
                     # 最も距離が近い Prey を探す
                     closest_prey = min(
                         preys, 
@@ -333,7 +338,7 @@ class PreyTrainEnv:
                     act[3] = max(0, -delta_pos[1])  # Down (-y)
                     act[4] = max(0,  delta_pos[1])  # Up (+y)
                 else:
-                    # ランダムモード&フォールバック (万が一オブジェクトが見つからない場合)
+                    # ランダムモード、またはオブジェクトが見つからない場合のフォールバック
                     act = self.env.env.action_space(agent_name).sample()
             else:
                 act = prey_actions[prey_idx]
