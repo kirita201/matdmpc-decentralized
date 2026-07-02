@@ -6,6 +6,7 @@ import argparse
 import torch
 import numpy as np
 import imageio
+import random  # 【追加】ランダムモードの決定に使用
 from pathlib import Path
 
 from envs.mpe_wrapper import MPEWrapper, PREDPREY_CONFIGS
@@ -25,6 +26,7 @@ def evaluate_prey(args):
     num_good = PREDPREY_CONFIGS[args.N][0]
     all_agents = env.env.possible_agents
     prey_agents = [a for a in all_agents if "adversary" not in a]
+    adv_agents = [a for a in all_agents if "adversary" in a]  # 【追加】Adversaryのリストを分離
     
     env.env.reset()
     prey_obs_sample = env.env.observe(prey_agents[0])
@@ -46,6 +48,12 @@ def evaluate_prey(args):
 
     for ep in range(args.episodes):
         env.env.reset()
+        
+        # 【追加】エピソード開始時に60%の確率で追跡、40%でランダムに割り当て
+        adv_modes = {
+            agent_name: (random.random() < 0.6) for agent_name in adv_agents
+        }
+        
         done = False
         ep_reward = 0
         frames = []
@@ -62,28 +70,27 @@ def evaluate_prey(args):
             world = env.env.unwrapped.world if hasattr(env.env, "unwrapped") else env.env.world
             prey_idx = 0
             
-            # シンプルなループで順次step処理 (順番は完全に保証される)
             for agent_name in all_agents:
                 if "adversary" in agent_name:
                     adv_obj = next((a for a in world.agents if a.name == agent_name), None)
                     preys = [a for a in world.agents if not a.adversary]
                     
-                    if adv_obj is not None and len(preys) > 0:
+                    # 【修正】adv_modesの判定を追加
+                    if adv_modes.get(agent_name, False) and adv_obj is not None and len(preys) > 0:
                         closest_prey = min(preys, key=lambda p: np.linalg.norm(p.state.p_pos - adv_obj.state.p_pos))
                         delta_pos = closest_prey.state.p_pos - adv_obj.state.p_pos
                         
-                        # ご提案の通り、絶対値の大きい方を1とするスケーリングでフルパワー化
                         scale = max(abs(delta_pos[0]), abs(delta_pos[1]))
                         if scale > 1e-5:
                             delta_pos = delta_pos / scale
                         
                         act = np.zeros(5, dtype=np.float32)
-                        # 【修正】MPEの正しい行動インデックス仕様に合わせて配置
                         act[1] = max(0, -delta_pos[0])  # 1: Left (-x)
                         act[2] = max(0,  delta_pos[0])  # 2: Right (+x)
                         act[3] = max(0, -delta_pos[1])  # 3: Down (-y)
                         act[4] = max(0,  delta_pos[1])  # 4: Up (+y)
                     else:
+                        # 【修正】追跡モードでない場合はランダム行動を取る
                         act = env.env.action_space(agent_name).sample()
                 else:
                     act = prey_actions[prey_idx]
@@ -118,5 +125,3 @@ if __name__ == "__main__":
     args = parser.parse_args()
     
     evaluate_prey(args)
-
-#python eval_prey.py --N 3 --episodes 10 --save_gif --gif_episodes 3
