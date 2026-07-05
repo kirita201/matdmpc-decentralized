@@ -65,8 +65,8 @@ class NavigationScenario(BaseScenario):
         self.n_rays_agent = 12
         self.n_rays_obstacle = 12
         
-    def make_world(self, batch_dim):
-        world = World(batch_dim=batch_dim, device=self.device)
+    def make_world(self, batch_dim, device, **kwargs):
+        world = World(batch_dim=batch_dim, device=device)
         
         # 周囲の固定壁を配置 [-2.0, 2.0] の外周
         self.walls = []
