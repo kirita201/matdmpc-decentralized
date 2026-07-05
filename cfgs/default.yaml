@@ -5,10 +5,13 @@ seed: 42
 device: "cuda"
 
 # Multi-Agent setup
-task: "simple_spread"   # or "predator_prey"
+env_type: "vmas"        # "mpe" or "vmas"
+task: "navigation"      # MPE: "simple_spread" or "predator_prey", VMAS: "navigation" 等
 num_agents: 6           # 3 / 6 / 15
-obs_shape: [26]         # タスクとエージェント数に合わせて設定。make_task_cfg() で自動設定も可
-action_dim: 5    # Discrete/Continuous mixed in MPE, assume continuous 5
+reward_type: "individual" # "global" or "individual"
+obs_type: "local"       # "global" or "local"
+
+# NOTE: obs_shape, action_dim は実行時に実測・自動設定されます
 
 # Training
 train_steps: 500000

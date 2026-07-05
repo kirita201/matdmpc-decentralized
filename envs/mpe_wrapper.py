@@ -44,11 +44,12 @@ class SpreadScenario(BaseScenario):
           + other_rel(n_visible_agents * 2)
     """
 
-    def __init__(self, N, obs_range, n_visible_agents, n_visible_landmarks):
+    def __init__(self, N, obs_range, n_visible_agents, n_visible_landmarks, obs_type="local"):
         self.N = N
         self.obs_range = obs_range
         self.n_vis_agents = n_visible_agents
         self.n_vis_lm = n_visible_landmarks
+        self.obs_type = obs_type
 
     def make_world(self):
         world = World()
@@ -104,39 +105,45 @@ class SpreadScenario(BaseScenario):
         return rew
 
     def observation(self, agent, world):
-        # ── ランドマーク: 距離が近い順に n_vis_lm 個 ──
-        lm_rel = []
-        for lm in world.landmarks:
-            lm_rel.append((np.linalg.norm(lm.state.p_pos - agent.state.p_pos),
-                           lm.state.p_pos - agent.state.p_pos))
-        lm_rel.sort(key=lambda x: x[0])
-        lm_obs = []
-        for i in range(self.n_vis_lm):
-            if i < len(lm_rel) and lm_rel[i][0] <= self.obs_range:
-                lm_obs.append(lm_rel[i][1])
-            else:
-                lm_obs.append(np.zeros(world.dim_p))  # 範囲外はゼロ
+        if self.obs_type == 'global':
+            lm_obs = [lm.state.p_pos - agent.state.p_pos for lm in world.landmarks]
+            other_obs = [other.state.p_pos - agent.state.p_pos for other in world.agents if other is not agent]
+            return np.concatenate([agent.state.p_vel, agent.state.p_pos] + lm_obs + other_obs)
+        else:
+            # ── ランドマーク: 距離が近い順に n_vis_lm 個 ──
+            lm_rel = []
+            for lm in world.landmarks:
+                lm_rel.append((np.linalg.norm(lm.state.p_pos - agent.state.p_pos),
+                            lm.state.p_pos - agent.state.p_pos))
+            lm_rel.sort(key=lambda x: x[0])
+            lm_obs = []
+            for i in range(self.n_vis_lm):
+                if i < len(lm_rel) and lm_rel[i][0] <= self.obs_range:
+                    lm_obs.append(lm_rel[i][1])
+                else:
+                    lm_obs.append(np.zeros(world.dim_p))  # 範囲外はゼロ
 
-        # ── 他エージェント: 距離が近い順に n_vis_agents 体 ──
-        other_rel = []
-        for other in world.agents:
-            if other is agent:
-                continue
-            d = np.linalg.norm(other.state.p_pos - agent.state.p_pos)
-            other_rel.append((d, other.state.p_pos - agent.state.p_pos))
-        other_rel.sort(key=lambda x: x[0])
-        other_obs = []
-        for i in range(self.n_vis_agents):
-            if i < len(other_rel) and other_rel[i][0] <= self.obs_range:
-                other_obs.append(other_rel[i][1])
-            else:
-                other_obs.append(np.zeros(world.dim_p))  # 範囲外はゼロ
+            # ── 他エージェント: 距離が近い順に n_vis_agents 体 ──
+            other_rel = []
+            for other in world.agents:
+                if other is agent:
+                    continue
+                d = np.linalg.norm(other.state.p_pos - agent.state.p_pos)
+                other_rel.append((d, other.state.p_pos - agent.state.p_pos))
+            other_rel.sort(key=lambda x: x[0])
+            other_obs = []
+            for i in range(self.n_vis_agents):
+                if i < len(other_rel) and other_rel[i][0] <= self.obs_range:
+                    other_obs.append(other_rel[i][1])
+                else:
+                    other_obs.append(np.zeros(world.dim_p))  # 範囲外はゼロ
 
-        return np.concatenate(
-            [agent.state.p_vel, agent.state.p_pos]
-            + lm_obs
-            + other_obs
-        )
+            return np.concatenate(
+                [agent.state.p_vel, agent.state.p_pos]
+                + lm_obs
+                + other_obs
+            )
+        pass
 
 
 # ─────────────────────────────────────────────────────────
@@ -154,7 +161,7 @@ class PredatorPreyScenario(BaseScenario):
     """
 
     def __init__(self, num_adversaries, num_good, num_obstacles,
-                 obs_range, n_visible_adv, n_visible_lm, n_visible_prey):
+                 obs_range, n_visible_adv, n_visible_lm, n_visible_prey, reward_type="global", obs_type="local"):
         self.num_adversaries = num_adversaries
         self.num_good = num_good
         self.num_obstacles = num_obstacles
@@ -162,6 +169,8 @@ class PredatorPreyScenario(BaseScenario):
         self.n_vis_adv = n_visible_adv
         self.n_vis_lm = n_visible_lm
         self.n_vis_prey = n_visible_prey
+        self.reward_type = reward_type
+        self.obs_type = obs_type
 
     def make_world(self):
         world = World()
@@ -218,11 +227,32 @@ class PredatorPreyScenario(BaseScenario):
 
     def _adversary_reward(self, agent, world):
         rew = 0.0
-        # チームの「誰か」が捕まえたら全員に加点する
-        for adv in self.adversaries(world):
+        catch_count = 0
+        
+        if self.reward_type == "individual":
             for prey in self.good_agents(world):
-                if self.is_collision(adv, prey):
-                    rew += 10.0
+                catching_advs = [a for a in self.adversaries(world) if self.is_collision(a, prey)]
+                if catching_advs:
+                    catch_count += 1
+                    caught = True
+                    if agent in catching_advs:
+                        rew += 10.0
+                    else:
+                        d = np.linalg.norm(agent.state.p_pos - prey.state.p_pos)
+                        if d <= self.obs_range:
+                            rew += 5.0 * max(0.0, 1.0 - (d / self.obs_range))
+        else:
+            for prey in self.good_agents(world):
+                caught_by_anyone = False
+                for adv in self.adversaries(world):
+                    if self.is_collision(adv, prey):
+                        rew += 10.0
+                        caught_by_anyone = True
+                if caught_by_anyone:
+                    catch_count += 1
+                        
+        current_catches = getattr(world, 'predator_catches', 0)
+        world.predator_catches = max(current_catches, catch_count)
         return rew
 
     def _agent_reward(self, agent, world):
@@ -302,80 +332,88 @@ class PredatorPreyScenario(BaseScenario):
             # 捕食者 (Adversary) 側の部分観測ロジック
             # ─────────────────────────────────────────────────────────
             
-            # 【追加】範囲外パディング用のダミー値
-            # 位置は「遠く離れた場所」、速度は「停止状態」とする
-            dummy_pos = np.full(world.dim_p, 1.5)
-            dummy_vel = np.zeros(world.dim_p)
-            
-            # ── 障害物: 近い順に n_vis_lm 個 ──
-            lm_rel = sorted(
-                [(np.linalg.norm(lm.state.p_pos - agent.state.p_pos),
-                  lm.state.p_pos - agent.state.p_pos)
-                 for lm in world.landmarks if not lm.boundary],
-                key=lambda x: x[0]
-            )
-            lm_obs = []
-            for i in range(self.n_vis_lm):
-                if i < len(lm_rel) and lm_rel[i][0] <= self.obs_range:
-                    lm_obs.append(lm_rel[i][1])
-                else:
-                    # 【修正】ゼロではなくダミー座標でパディング
-                    lm_obs.append(dummy_pos)
+            if self.obs_type == 'global':
+                lm_obs = [lm.state.p_pos - agent.state.p_pos for lm in world.landmarks if not lm.boundary]
+                adv_obs = [other.state.p_pos - agent.state.p_pos for other in self.adversaries(world) if other is not agent]
+                prey_pos = [p.state.p_pos - agent.state.p_pos for p in self.good_agents(world)]
+                prey_vel = [p.state.p_vel for p in self.good_agents(world)]
+                return np.concatenate([agent.state.p_vel, agent.state.p_pos] + lm_obs + adv_obs + prey_pos + prey_vel)
+            else:
+                # 【追加】範囲外パディング用のダミー値
+                # 位置は「遠く離れた場所」、速度は「停止状態」とする
+                dummy_pos = np.full(world.dim_p, 1.5)
+                dummy_vel = np.zeros(world.dim_p)
+                
+                # ── 障害物: 近い順に n_vis_lm 個 ──
+                lm_rel = sorted(
+                    [(np.linalg.norm(lm.state.p_pos - agent.state.p_pos),
+                    lm.state.p_pos - agent.state.p_pos)
+                    for lm in world.landmarks if not lm.boundary],
+                    key=lambda x: x[0]
+                )
+                lm_obs = []
+                for i in range(self.n_vis_lm):
+                    if i < len(lm_rel) and lm_rel[i][0] <= self.obs_range:
+                        lm_obs.append(lm_rel[i][1])
+                    else:
+                        # 【修正】ゼロではなくダミー座標でパディング
+                        lm_obs.append(dummy_pos)
 
-            # ── 他の捕食者 ──
-            other_adv = sorted(
-                [(np.linalg.norm(other.state.p_pos - agent.state.p_pos),
-                  other.state.p_pos - agent.state.p_pos)
-                 for other in self.adversaries(world) if other is not agent],
-                key=lambda x: x[0]
-            )
-            adv_obs = []
-            for i in range(self.n_vis_adv):
-                if i < len(other_adv) and other_adv[i][0] <= self.obs_range:
-                    adv_obs.append(other_adv[i][1])
-                else:
-                    # 【修正】ゼロではなくダミー座標でパディング
-                    adv_obs.append(dummy_pos)
+                # ── 他の捕食者 ──
+                other_adv = sorted(
+                    [(np.linalg.norm(other.state.p_pos - agent.state.p_pos),
+                    other.state.p_pos - agent.state.p_pos)
+                    for other in self.adversaries(world) if other is not agent],
+                    key=lambda x: x[0]
+                )
+                adv_obs = []
+                for i in range(self.n_vis_adv):
+                    if i < len(other_adv) and other_adv[i][0] <= self.obs_range:
+                        adv_obs.append(other_adv[i][1])
+                    else:
+                        # 【修正】ゼロではなくダミー座標でパディング
+                        adv_obs.append(dummy_pos)
 
-            # ── 獲物: 位置 + 速度 ──
-            prey_list = sorted(
-                [(np.linalg.norm(p.state.p_pos - agent.state.p_pos),
-                  p.state.p_pos - agent.state.p_pos,
-                  p.state.p_vel)
-                 for p in self.good_agents(world)],
-                key=lambda x: x[0]
-            )
-            prey_pos_obs = []
-            prey_vel_obs = []
-            for i in range(self.n_vis_prey):
-                if i < len(prey_list) and prey_list[i][0] <= self.obs_range:
-                    prey_pos_obs.append(prey_list[i][1])
-                    prey_vel_obs.append(prey_list[i][2])
-                else:
-                    # 【修正】位置はダミー座標、速度はゼロでパディング
-                    prey_pos_obs.append(dummy_pos)
-                    prey_vel_obs.append(dummy_vel)
+                # ── 獲物: 位置 + 速度 ──
+                prey_list = sorted(
+                    [(np.linalg.norm(p.state.p_pos - agent.state.p_pos),
+                    p.state.p_pos - agent.state.p_pos,
+                    p.state.p_vel)
+                    for p in self.good_agents(world)],
+                    key=lambda x: x[0]
+                )
+                prey_pos_obs = []
+                prey_vel_obs = []
+                for i in range(self.n_vis_prey):
+                    if i < len(prey_list) and prey_list[i][0] <= self.obs_range:
+                        prey_pos_obs.append(prey_list[i][1])
+                        prey_vel_obs.append(prey_list[i][2])
+                    else:
+                        # 【修正】位置はダミー座標、速度はゼロでパディング
+                        prey_pos_obs.append(dummy_pos)
+                        prey_vel_obs.append(dummy_vel)
 
-            return np.concatenate(
-                [agent.state.p_vel, agent.state.p_pos]
-                + lm_obs
-                + adv_obs
-                + prey_pos_obs
-                + prey_vel_obs
-            )
+                return np.concatenate(
+                    [agent.state.p_vel, agent.state.p_pos]
+                    + lm_obs
+                    + adv_obs
+                    + prey_pos_obs
+                    + prey_vel_obs
+                )
+            pass
 
 
 # ─────────────────────────────────────────────────────────
 # カスタム PettingZoo 環境クラス生成ヘルパー
 # ─────────────────────────────────────────────────────────
 def _make_spread_raw_env(N, obs_range, n_visible_agents, n_visible_landmarks,
-                         local_ratio, max_cycles, continuous_actions, render_mode=None):
+                         local_ratio, max_cycles, continuous_actions, render_mode=None, obs_type="local", **kwargs):
     """SpreadScenario を使った raw_env を動的生成する。"""
 
     class SpreadRawEnv(SimpleEnv, EzPickle):
         def __init__(self):
             EzPickle.__init__(self)
-            scenario = SpreadScenario(N, obs_range, n_visible_agents, n_visible_landmarks)
+            scenario = SpreadScenario(N, obs_range, n_visible_agents, n_visible_landmarks, obs_type=obs_type)
             world = scenario.make_world()
             SimpleEnv.__init__(
                 self,
@@ -393,7 +431,7 @@ def _make_spread_raw_env(N, obs_range, n_visible_agents, n_visible_landmarks,
 
 def _make_predator_prey_raw_env(num_adversaries, num_good, num_obstacles,
                                 obs_range, n_visible_adv, n_visible_lm,
-                                n_visible_prey, max_cycles, continuous_actions, render_mode=None):
+                                n_visible_prey, max_cycles, continuous_actions, render_mode=None,reward_type="global", obs_type="local", **kwargs):
     """PredatorPreyScenario を使った raw_env を動的生成する。"""
 
     class PredatorPreyRawEnv(SimpleEnv, EzPickle):
@@ -401,7 +439,7 @@ def _make_predator_prey_raw_env(num_adversaries, num_good, num_obstacles,
             EzPickle.__init__(self)
             scenario = PredatorPreyScenario(
                 num_adversaries, num_good, num_obstacles,
-                obs_range, n_visible_adv, n_visible_lm, n_visible_prey
+                obs_range, n_visible_adv, n_visible_lm, n_visible_prey, reward_type=reward_type, obs_type=obs_type
             )
             world = scenario.make_world()
             SimpleEnv.__init__(
@@ -543,6 +581,8 @@ class MPEWrapper:
         if cfg_range is not None:
             obs_range = cfg_range   # cfg で上書き可能
 
+        obs_type = getattr(cfg, "obs_type", "local")
+
         RawEnvClass = _make_spread_raw_env(
             N=N,
             obs_range=obs_range,
@@ -551,7 +591,8 @@ class MPEWrapper:
             local_ratio=getattr(cfg, "local_ratio", 0.5),
             max_cycles=cfg.episode_length,
             continuous_actions=True,
-            render_mode=self.render_mode
+            render_mode=self.render_mode,
+            obs_type=obs_type
         )
         env_fn = make_env(RawEnvClass)
         self.env = env_fn()
@@ -571,6 +612,9 @@ class MPEWrapper:
         if cfg_range is not None:
             obs_range = cfg_range
 
+        reward_type = getattr(cfg, "reward_type", "global")
+        obs_type = getattr(cfg, "obs_type", "local")
+
         RawEnvClass = _make_predator_prey_raw_env(
             num_adversaries=N,
             num_good=num_good,
@@ -581,7 +625,9 @@ class MPEWrapper:
             n_visible_prey=n_vis_prey,
             max_cycles=cfg.episode_length,
             continuous_actions=True,
-            render_mode=self.render_mode
+            render_mode=self.render_mode,
+            reward_type=reward_type, # ▼ 追加
+            obs_type=obs_type
         )
         env_fn = make_env(RawEnvClass)
         self.env = env_fn()
@@ -653,7 +699,8 @@ class MPEWrapper:
                 self.env.terminations[agent] or self.env.truncations[agent]
             )
         obs = self._get_obs()
-        return obs, np.array(rewards, dtype=np.float32), bool(np.any(dones)), {}
+        info = {'agent_positions': np.array([a.state.p_pos for a in self.agents])}
+        return obs, np.array(rewards, dtype=np.float32), bool(np.any(dones)), info
 
     # ── predator_prey step ───────────────────────────────
     def _step_predprey(self, actions):
@@ -690,7 +737,10 @@ class MPEWrapper:
                 self.env.terminations[agent] or self.env.truncations[agent]
             )
         obs = self._get_obs()
-        return obs, np.array(rewards, dtype=np.float32), bool(np.any(dones)), {}
+        info = {'agent_positions': np.array([a.state.p_pos for a in self.agents])}
+        info['predator_catch'] = getattr(self.env.unwrapped.world, 'predator_catches', 0)
+        self.env.unwrapped.world.predator_catches = 0 # ステップごとにリセット
+        return obs, np.array(rewards, dtype=np.float32), bool(np.any(dones)), info
 
     # ── 観測収集 ────────────────────────────────────────
     def _get_obs(self):

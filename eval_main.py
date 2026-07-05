@@ -6,7 +6,8 @@ import imageio
 import yaml
 from pathlib import Path
 
-from envs.mpe_wrapper import MPEWrapper
+# MPEWrapperではなくmake_envを使用するように変更
+from envs.make_env import make_env
 from algorithm.ma_tdmpc import MATDMPC
 
 class MockConfig:
@@ -29,8 +30,13 @@ def evaluate_main(args):
     set_seed(args.seed)
     task_name = getattr(cfg, "task", "simple_spread")
     
-    # 評価用の環境 (render_modeを指定)
-    env = MPEWrapper(cfg, render_mode="rgb_array" if args.save_gif else None)
+    # 評価用の環境 (make_envに変更)
+    env = make_env(cfg, render_mode="rgb_array" if args.save_gif else None)
+    
+    # モデル初期化前に次元数を動的取得して設定 (train.pyに合わせる)
+    cfg.obs_shape = list(env.obs_shape)
+    cfg.action_dim = env.action_dim
+    
     agent = MATDMPC(cfg)
     
     # モデルのロード
@@ -58,7 +64,11 @@ def evaluate_main(args):
             if args.save_gif and ep < args.gif_episodes:
                 frame = env.render()
                 if frame is not None:
-                    frames.append(frame)
+                    # MPE/VMASの違いを吸収する処理を追加
+                    if isinstance(frame, list):
+                        frames.extend(frame)
+                    else:
+                        frames.append(frame)
 
             # 評価モード (eval_mode=True) で行動を計画
             action = agent.plan(obs, eval_mode=True, step=1000000, t0=(t==0))
@@ -94,5 +104,4 @@ if __name__ == "__main__":
     
     evaluate_main(args)
 
-
-#python eval_main.py --episodes 10 --save_gif --gif_episodes 5
+    #python eval_main.py --episodes 10 --save_gif --gif_episodes 5
