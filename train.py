@@ -61,12 +61,19 @@ def train():
     cfg = load_cfg()
     set_seed(cfg.seed)
 
+    # configから必要なパラメータを取得 (デフォルト値も設定)
     task_name = getattr(cfg, "task", "simple_spread")
-    log_dir = Path(f"logs/{task_name}_N{cfg.num_agents}")
+    obs_type = getattr(cfg, "obs_type", "local")
+    reward_type = getattr(cfg, "reward_type", "individual")
+    
+    # 識別用のディレクトリ名を作成
+    exp_name = f"{task_name}_N{cfg.num_agents}_{obs_type}_{reward_type}"
+
+    log_dir = Path(f"logs/{exp_name}")
     log_dir.mkdir(parents=True, exist_ok=True)
     writer = SummaryWriter(log_dir=str(log_dir))
 
-    ckpt_dir = Path(getattr(cfg, "ckpt_dir", "checkpoints")) / f"{task_name}_N{cfg.num_agents}"
+    ckpt_dir = Path(getattr(cfg, "ckpt_dir", "checkpoints")) / exp_name
     ckpt_dir.mkdir(parents=True, exist_ok=True)
     model_ckpt_path = ckpt_dir / "model_latest.pt"
     buffer_ckpt_path = ckpt_dir / "buffer_latest.pt"

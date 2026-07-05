@@ -28,7 +28,14 @@ def set_seed(seed):
 def evaluate_main(args):
     cfg = load_cfg()
     set_seed(args.seed)
+    
+    # configから必要なパラメータを取得
     task_name = getattr(cfg, "task", "simple_spread")
+    obs_type = getattr(cfg, "obs_type", "local")
+    reward_type = getattr(cfg, "reward_type", "individual")
+    
+    # 識別用のディレクトリ名を作成
+    exp_name = f"{task_name}_N{cfg.num_agents}_{obs_type}_{reward_type}"
     
     # 評価用の環境 (make_envに変更)
     env = make_env(cfg, render_mode="rgb_array" if args.save_gif else None)
@@ -39,15 +46,16 @@ def evaluate_main(args):
     
     agent = MATDMPC(cfg)
     
-    # モデルのロード
-    ckpt_path = Path(args.ckpt) if args.ckpt else Path(getattr(cfg, "ckpt_dir", "checkpoints")) / f"{task_name}_N{cfg.num_agents}" / "model_latest.pt"
+    # モデルのロード (exp_nameを使用)
+    ckpt_path = Path(args.ckpt) if args.ckpt else Path(getattr(cfg, "ckpt_dir", "checkpoints")) / exp_name / "model_latest.pt"
     if ckpt_path.exists():
         print(f">>> Loading checkpoint from {ckpt_path}")
         agent.load(ckpt_path)
     else:
         print(f">>> Warning: Checkpoint not found at {ckpt_path}. Using an untrained random model.")
 
-    out_dir = Path("eval_results") / f"{task_name}_N{cfg.num_agents}"
+    # 評価結果の保存先 (exp_nameを使用)
+    out_dir = Path("eval_results") / exp_name
     out_dir.mkdir(parents=True, exist_ok=True)
 
     episode_rewards = []
