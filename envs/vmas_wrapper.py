@@ -35,19 +35,14 @@ class VMASWrapper:
         self.agents = self.env.agents
         
         # obs_shape と action_dim の実測
-        sample_obs = self._get_obs()
+        sample_obs = self.reset()
         self.obs_shape = sample_obs.shape[1:]  # [N, obs_dim] -> (obs_dim,)
         self.action_dim = self.env.action_space[0].shape[0] if hasattr(self.env, "action_space") else 2
 
-    def _get_obs(self):
-        # VMASはリストのテンソルを返すので [num_envs, N, obs_dim] にスタックして [N, obs_dim] に次元削減(cpu/numpy)
-        obs_list = self.env.get_obs()
+    def reset(self):
+        obs_list = self.env.reset()
         obs_tensor = torch.stack(obs_list, dim=1)
         return obs_tensor[0].cpu().numpy()
-
-    def reset(self):
-        self.env.reset()
-        return self._get_obs()
 
     def step(self, actions):
         # actions: [N, action_dim] numpy
@@ -55,7 +50,8 @@ class VMASWrapper:
         
         obs_list, reward_list, done_tensor, info_list = self.env.step(action_list)
         
-        obs = self._get_obs()
+        obs_tensor = torch.stack(obs_list, dim=1)
+        obs = obs_tensor[0].cpu().numpy()
         rewards = torch.stack(reward_list, dim=1)[0].cpu().numpy()  # [N]
         done = done_tensor[0].cpu().numpy().item()
         
