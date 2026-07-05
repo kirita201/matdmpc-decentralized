@@ -44,7 +44,7 @@ def compute_lidar(agent_pos, target_positions, target_radii, num_rays, max_range
         for wall_y in [-2.0, 2.0]:
             t_y = (wall_y - agent_pos[:, 1:2]) / (expanded_rays[:, :, 1] + 1e-8)
             valid_y = (t_y > 0) & (t_y < min_dists)
-            intersect_x = agent_pos[:, 0:2] + t_y * expanded_rays[:, :, 0]
+            intersect_x = agent_pos[:, 0:1] + t_y * expanded_rays[:, :, 0]
             valid_y &= (intersect_x >= -2.0) & (intersect_x <= 2.0)
             min_dists = torch.where(valid_y, t_y, min_dists)
             
