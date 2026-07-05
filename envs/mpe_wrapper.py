@@ -737,7 +737,7 @@ class MPEWrapper:
                 self.env.terminations[agent] or self.env.truncations[agent]
             )
         obs = self._get_obs()
-        info = {'agent_positions': np.array([a.state.p_pos for a in self.agents])}
+        info = {'agent_positions': np.array([agent.state.p_pos for agent in self.env.unwrapped.world.agents])}
         info['predator_catch'] = getattr(self.env.unwrapped.world, 'predator_catches', 0)
         self.env.unwrapped.world.predator_catches = 0 # ステップごとにリセット
         return obs, np.array(rewards, dtype=np.float32), bool(np.any(dones)), info
