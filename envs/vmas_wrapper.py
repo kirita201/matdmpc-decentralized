@@ -26,6 +26,7 @@ class VMASWrapper:
             num_envs=self.num_envs,
             device=self.device,
             continuous_actions=True,
+            max_steps=cfg.episode_length,
             wrapper=None,
             seed=cfg.seed,
             n_agents=cfg.num_agents if isinstance(scenario, str) else None
