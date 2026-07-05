@@ -1,6 +1,7 @@
 # envs/custom_vmas/navigation.py
 import torch
 import math
+import colorsys  # 追加: HSVからRGBへの変換用
 from vmas.simulator.core import Agent, Landmark, Sphere, Box, World
 from vmas.simulator.scenario import BaseScenario
 
@@ -68,7 +69,7 @@ class NavigationScenario(BaseScenario):
     def make_world(self, batch_dim, device, **kwargs):
         world = World(batch_dim=batch_dim, device=device)
         
-        # 周囲の固定壁を配置 [-2.0, 2.0] の外周
+        # 固定壁の配置 (そのまま)
         self.walls = []
         wall_color = (0.3, 0.3, 0.3)
         self.walls.append(Landmark(name="wall_top", collide=True, movable=False, shape=Box(length=4.4, width=0.2), color=wall_color))
@@ -84,17 +85,43 @@ class NavigationScenario(BaseScenario):
             self.obstacles.append(obs)
             world.add_landmark(obs)
             
+        # ─── 修正箇所: エージェントとゴールの色をペアで動的生成 ───
         self.agents_list = []
+        self.goals = []
+        
         for i in range(self.num_agents):
-            agent = Agent(name=f"agent_{i}", collide=True, shape=Sphere(self.agent_radius), color=(0.2, 0.2, 0.8), render_action=True)
+            # 1. 色相(H)をエージェント数で等分割 (0.0 〜 1.0)
+            hue = i / self.num_agents
+            
+            # 2. エージェントの色 (彩度高め、明度高めでハッキリした色)
+            # colorsys.hsv_to_rgb は (R, G, B) のタプルを返す
+            agent_color = colorsys.hsv_to_rgb(hue, 0.8, 0.9)
+            
+            # 3. ゴールの色 (彩度を下げることで「ちょい薄め」にする)
+            goal_color = colorsys.hsv_to_rgb(hue, 0.25, 0.95)
+            
+            # エージェントの生成
+            agent = Agent(
+                name=f"agent_{i}", 
+                collide=True, 
+                shape=Sphere(self.agent_radius), 
+                color=agent_color,  # 固有の色を設定
+                render_action=True
+            )
             self.agents_list.append(agent)
             world.add_agent(agent)
             
-        self.goals = []
-        for i in range(self.num_agents):
-            goal = Landmark(name=f"goal_{i}", collide=False, movable=False, shape=Sphere(self.goal_radius), color=(0.2, 0.8, 0.2))
+            # 対応するゴールの生成
+            goal = Landmark(
+                name=f"goal_{i}", 
+                collide=False, 
+                movable=False, 
+                shape=Sphere(self.goal_radius), 
+                color=goal_color,  # エージェントに対応した薄い色を設定
+            )
             self.goals.append(goal)
             world.add_landmark(goal)
+            
         return world
         
     def reset_world_at(self, env_index):
@@ -132,6 +159,8 @@ class NavigationScenario(BaseScenario):
                     min_dist = self.obstacle_radius + p_rad + (self.agent_radius * 2) + 0.1
                     collision |= (torch.norm(pos - p_pos, dim=-1) < min_dist)
                 success = active_mask & (~collision) | (~active_mask)
+            failed_mask = active_mask & (~success)
+            pos[failed_mask] = 100.0
                 
             obs.state.pos[idx] = pos
             placed_entities.append((pos.clone(), self.obstacle_radius))
