@@ -80,7 +80,7 @@ class VMASWrapper:
 
     def render(self):
         if self.render_mode == "rgb_array":
-            frames = self.env.render(mode="rgb_array", visualize_sensors=False)
+            frames = self.env.render(mode="rgb_array")
             frame = frames[0] if isinstance(frames, list) else frames
             if frame is not None:
                 frame = frame[::2, ::2, :]  # [H, W, C] の縦横を1つ飛ばしでスライス
