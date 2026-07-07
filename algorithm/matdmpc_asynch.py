@@ -82,7 +82,7 @@ class AsynchMATDMPC:
         e0 = self.model.encode(obs_t)  # [1, N, latent]
 
         # ── 絶対座標から初期通信グラフを生成（ホライズン内固定） ──
-        adj_mask_1 = self._make_adj_mask(positions.unsqueeze(0) if positions is not None else None) # [1, N, N] または None
+        adj_mask_1 = self._make_adj_mask(np.expand_dims(positions, axis=0) if positions is not None else None) # [1, N, N] または None
 
         # --- prev_mean (前回導出解) の更新 ---
         if t0:
