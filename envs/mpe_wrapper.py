@@ -18,7 +18,7 @@ MA-TDMPC用 MPEラッパー
 
 観測範囲制限:
   - 観測範囲内のエンティティのみを観測に含める
-  - 範囲外のエンティティはゼロパディング
+  - 範囲外のエンティティは固定値（obs_range * 1.5）でパディング
   - 観測ベクトルのサイズは (n_visible_agents * 2 + n_visible_lm * 2 + ...) で固定
 """
 
@@ -335,8 +335,8 @@ class PredatorPreyScenario(BaseScenario):
                 prey_vel = [p.state.p_vel for p in self.good_agents(world)]
                 return np.concatenate([agent.state.p_vel, agent.state.p_pos] + lm_obs + adv_obs + prey_pos + prey_vel)
             else:
-                # obs_range（通常1.0）より確実に大きい値（例として1.5倍や 2.0 など）で固定する
-                padding_val = self.obs_range * 1.5 
+                # 【修正】ダミー値はマップサイズに依存せず、obs_rangeを基準に固定化
+                padding_val = self.obs_range * 1.5
                 dummy_pos = np.full(world.dim_p, padding_val)
                 dummy_vel = np.zeros(world.dim_p)
                 
@@ -656,7 +656,7 @@ class MPEWrapper:
         """
         self.env.reset()
         obs = self._get_obs()
-        info = {'agent_positions': np.array([a.state.p_pos for a in self.agents])}
+        info = {'agent_positions': self._get_agent_positions()}
         return obs, info
 
     def step(self, actions):
@@ -691,7 +691,7 @@ class MPEWrapper:
                 self.env.terminations[agent] or self.env.truncations[agent]
             )
         obs = self._get_obs()
-        info = {'agent_positions': np.array([a.state.p_pos for a in self.agents])}
+        info = {'agent_positions': self._get_agent_positions()}
         return obs, np.array(rewards, dtype=np.float32), bool(np.any(dones)), info
 
     # ── predator_prey step ───────────────────────────────
@@ -724,7 +724,7 @@ class MPEWrapper:
                 self.env.terminations[agent] or self.env.truncations[agent]
             )
         obs = self._get_obs()
-        info = {'agent_positions': np.array([agent.state.p_pos for agent in self.env.unwrapped.world.agents])}
+        info = {'agent_positions': self._get_agent_positions()}
         info['predator_catch'] = getattr(self.env.unwrapped.world, 'predator_catches', 0)
         self.env.unwrapped.world.predator_catches = 0 # ステップごとにリセット
         return obs, np.array(rewards, dtype=np.float32), bool(np.any(dones)), info
@@ -732,6 +732,16 @@ class MPEWrapper:
     # ── 観測収集 ────────────────────────────────────────
     def _get_obs(self):
         return np.stack([self.env.observe(a) for a in self.agents])
+    
+    def _get_agent_positions(self):
+        """self.agents (エージェント名のリスト) に対応する実際の座標を取得"""
+        positions = []
+        for name in self.agents:
+            for a in self.env.unwrapped.world.agents:
+                if a.name == name:
+                    positions.append(a.state.p_pos)
+                    break
+        return np.array(positions)
     
     def render(self):
         # Nに応じてマップサイズを取得し、描画範囲(cam_range)をそれに合わせる
