@@ -44,9 +44,15 @@ class VMASWrapper:
     @torch.no_grad()
     def reset(self):
         obs_list = self.env.reset()
-        # CPU上のテンソルであれば .numpy() はメモリコピーが発生せず高速（ゼロコピー）
         obs_tensor = torch.stack(obs_list, dim=1)
-        return obs_tensor[0].numpy()
+        obs = obs_tensor[0].cpu().numpy()
+        
+        # 位置情報の抽出 (info辞書に格納)
+        # VMASのエージェント状態から絶対座標を取得
+        positions = torch.stack([a.state.pos for a in self.env.agents], dim=1) # [num_envs, N, 2]
+        info = {'agent_positions': positions[0].cpu().numpy()}
+        
+        return obs, info
 
     # 変更点2: 同様に step 内の勾配計算を無効化
     @torch.no_grad()

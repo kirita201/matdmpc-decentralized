@@ -665,7 +665,9 @@ class MPEWrapper:
         obs : np.ndarray, shape (N, obs_dim)
         """
         self.env.reset()
-        return self._get_obs()
+        obs = self._get_obs()
+        info = {'agent_positions': np.array([a.state.p_pos for a in self.agents])}
+        return obs, info
 
     def step(self, actions):
         """

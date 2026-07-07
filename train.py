@@ -8,8 +8,9 @@ from pathlib import Path
 from torch.utils.tensorboard import SummaryWriter
 
 from envs.make_env import make_env
-from algorithm.ma_tdmpc import MATDMPC
 from algorithm.buffer import ReplayBuffer
+from algorithm.matdmpc_asynch import AsynchMATDMPC
+# from algorithm.tdmpc_synch import SynchMATDMPC  # 将来実装用
 from tqdm import tqdm
 
 torch.backends.cuda.matmul.allow_tf32 = True
@@ -66,8 +67,9 @@ def train():
     obs_type = getattr(cfg, "obs_type", "local")
     reward_type = getattr(cfg, "reward_type", "individual")
     
-    # 識別用のディレクトリ名を作成
-    exp_name = f"{task_name}_N{cfg.num_agents}_{obs_type}_{reward_type}"
+    algo_type = getattr(cfg, "algo_type", "asynch")
+    comm_type = "local" if getattr(cfg, "comm_range", float('inf')) != float('inf') else "global"
+    exp_name = f"{task_name}_N{cfg.num_agents}_{obs_type}_{reward_type}_{algo_type}_{comm_type}"
 
     log_dir = Path(f"logs/{exp_name}")
     log_dir.mkdir(parents=True, exist_ok=True)
@@ -89,7 +91,13 @@ def train():
     env = make_env(cfg)
     eval_env = make_env(cfg, render_mode="rgb_array")
 
-    agent = MATDMPC(cfg)
+    if algo_type == "asynch":
+        agent = AsynchMATDMPC(cfg)
+    elif algo_type == "synch":
+        # agent = SynchMATDMPC(cfg)
+        raise NotImplementedError("SynchMATDMPC is under development.")
+    else:
+        raise ValueError(f"Unknown algo_type: {algo_type}")
     buffer = ReplayBuffer(cfg)
     
     start_step = 0
@@ -117,7 +125,7 @@ def train():
         env.random_ratio = current_ratio
         eval_env.random_ratio = current_ratio
 
-        obs = env.reset()
+        obs, info = env.reset()
         done = False
         t = 0
         ep_reward = 0
@@ -128,12 +136,13 @@ def train():
         ep_pred_catches = 0
         
         while not done:
-            action = agent.plan(obs, step=step, t0=(t==0))
-            next_obs, reward, done, info = env.step(action.cpu().numpy())
+            positions = info.get('agent_positions', None)
+            action = agent.plan(obs, positions=positions, step=step, t0=(t==0))
+            next_obs, reward, done, next_info = env.step(action.cpu().numpy())
             
-            # ※ info['agent_positions'] は将来の分散通信で使用するため、今はモデル・バッファに渡さず破棄
-            buffer.add(obs, action.cpu().numpy(), reward, done)
+            buffer.add(obs, action.cpu().numpy(), reward, done, info)
             obs = next_obs
+            info = next_info
             ep_reward += np.sum(reward)
             
             # メトリクス収集

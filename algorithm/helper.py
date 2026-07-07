@@ -69,3 +69,14 @@ def linear_schedule(schdl, step):
             mix = np.clip(step / duration, 0.0, 1.0)
             return (1.0 - mix) * init + mix * final
     raise NotImplementedError(schdl)
+
+
+def get_comm_graph(positions, comm_range):
+    """
+    positions: Tensor [..., N, 2]
+    comm_range: float
+    Returns: BoolTensor [..., N, N]
+    """
+    # エージェント間のペアワイズ距離を計算
+    dist = torch.cdist(positions, positions) # [..., N, N]
+    return dist <= comm_range

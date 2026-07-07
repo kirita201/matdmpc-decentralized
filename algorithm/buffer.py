@@ -25,11 +25,16 @@ class ReplayBuffer:
         self._valid_mask = None
         self._valid_mask_dirty = True
 
-    def add(self, obs, action, reward, done):
+        self._positions = torch.empty((self.capacity+1, self.N, 2), dtype=torch.float32, device=self.device)
+
+    def add(self, obs, action, reward, done, info):
         self._obs[self.idx] = torch.tensor(obs, dtype=torch.float32, device=self.device)
         self._action[self.idx] = torch.tensor(action, dtype=torch.float32, device=self.device)
         self._reward[self.idx] = torch.tensor(reward, dtype=torch.float32, device=self.device)
         self._done[self.idx] = torch.tensor(done, dtype=torch.bool, device=self.device)
+
+        if 'agent_positions' in info:
+            self._positions[self.idx] = torch.tensor(info['agent_positions'], dtype=torch.float32, device=self.device)
         
         max_priority = self._priorities.max().item() if self.idx > 0 else 1.0
         self._priorities[self.idx] = max_priority
@@ -91,8 +96,9 @@ class ReplayBuffer:
         next_obs = self._obs[idx_mat + 1]    # [H+1, B, N, obs_dim]
         action   = self._action[idx_mat]     # [H+1, B, N, action_dim]
         reward   = self._reward[idx_mat]     # [H+1, B, N]
+        positions = self._positions[idx_mat]
 
-        return obs, next_obs, action, reward, idxs, weights
+        return obs, next_obs, action, reward, positions, idxs, weights
     
     def save(self, filepath):
         """バッファの状態をCPUメモリに移して保存"""

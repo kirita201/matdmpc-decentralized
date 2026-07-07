@@ -20,12 +20,50 @@ class TransformerComm(nn.Module):
         self.transformer = nn.TransformerEncoder(encoder_layer, num_layers=cfg.n_com_layers)
         self.out_proj = nn.Linear(self.d_model, cfg.latent_dim)
 
-    def forward(self, e, a):
-        # e: [Batch, N, latent_dim], a: [Batch, N, action_dim]
-        x = torch.cat([e, a], dim=-1) # [Batch, N, latent_dim + action_dim]
-        x = self.in_proj(x)           # [Batch, N, 128]
-        z = self.transformer(x)
+    def forward(self, e, a, adj_mask=None):
+        """
+        Parameters
+        ----------
+        e        : Tensor [B, N, latent_dim]
+        a        : Tensor [B, N, action_dim]
+        adj_mask : BoolTensor [B, N, N] または None
+            True の位置は「通信可能（アテンション許可）」。
+            None の場合は全結合（従来動作と等価）。
+
+        Returns
+        -------
+        Tensor [B, N, latent_dim]
+
+        Notes
+        -----
+        nn.TransformerEncoder の src_key_padding_mask / attn_mask は
+        「True = 無視（マスクアウト）」の符号規約を使う。
+        一方 adj_mask は「True = 通信可能」なので論理反転して渡す。
+
+        TransformerEncoderLayer に渡す attn_mask は
+        shape [B*n_heads, N, N] か [N, N] のどちらかを受け付ける。
+        バッチごとに異なるマスクを使いたいので [B*n_heads, N, N] で展開する。
+        """
+        B, N, _ = e.shape
+        x = torch.cat([e, a], dim=-1)   # [B, N, latent_dim + action_dim]
+        x = self.in_proj(x)             # [B, N, d_model]
+
+        src_mask = None
+        if adj_mask is not None:
+            # adj_mask: [B, N, N], True = 通信可能
+            # PyTorch の attn_mask 規約: -inf で遮断、0.0 で通過
+            # n_heads 分に複製: [B*n_heads, N, N]
+            n_heads = self.transformer.layers[0].self_attn.num_heads
+            # [B, N, N] -> [B, 1, N, N] -> [B, n_heads, N, N] -> [B*n_heads, N, N]
+            mask_expanded = adj_mask.unsqueeze(1).expand(B, n_heads, N, N)
+            mask_expanded = mask_expanded.reshape(B * n_heads, N, N)
+            # True(通信可) → 0.0、False(遮断) → -inf
+            src_mask = torch.zeros_like(mask_expanded, dtype=x.dtype)
+            src_mask = src_mask.masked_fill(~mask_expanded, float('-inf'))
+
+        z = self.transformer(x, mask=src_mask)
         return self.out_proj(z)
+
 
 class MixingNetwork(nn.Module):
     """Value Decomposition Network (QMIX-style but without monotonicity constraint)"""
@@ -98,8 +136,51 @@ class MACLM(nn.Module):
         """obs: [B, N, obs_dim] -> e: [B, N, latent_dim]"""
         return self._ln_enc(self._encoder(obs))
 
-    def communicate(self, e, a):
-        return self._comm(e, a)
+    def communicate(self, e, a, adj_mask=None):
+        """
+        Parameters
+        ----------
+        e        : Tensor [B, N, latent_dim]
+        a        : Tensor [B, N, action_dim]
+        adj_mask : BoolTensor [B, N, N] or None
+            True = 通信可能。None のとき全結合（ベースラインと等価）。
+        """
+        return self._comm(e, a, adj_mask=adj_mask)
+
+    def communicate_per_agent(self, e_per_agent, a, adj_mask_per_agent=None):
+        """
+        エージェントiごとに独立した通信グラフでアテンションを実行する。
+        update() の [N, B, N, latent] テンソルをそのまま処理できるよう、
+        N*B をバッチ次元に畳み込んで TransformerComm に通す。
+
+        Parameters
+        ----------
+        e_per_agent        : Tensor [N, B, N, latent_dim]
+            e_per_agent[i] = エージェントiの視点での全エージェント埋め込み [B, N, latent]
+        a                  : Tensor [B, N, action_dim]
+            全エージェントの行動（全視点で共通）
+        adj_mask_per_agent : BoolTensor [N, B, N, N] or None
+            adj_mask_per_agent[i, b] = エージェントiの視点でのサンプルbの通信グラフ [N, N]
+
+        Returns
+        -------
+        z_per_agent : Tensor [N, B, N, latent_dim]
+            z_per_agent[i, b, j] = エージェントiの通信後のエージェントj埋め込み
+        """
+        N, B, _, latent = e_per_agent.shape
+
+        # [N, B, N, latent] -> [N*B, N, latent]
+        e_flat = e_per_agent.reshape(N * B, N, latent)
+
+        # a: [B, N, action_dim] -> [N*B, N, action_dim]
+        a_flat = a.unsqueeze(0).expand(N, B, N, -1).reshape(N * B, N, -1)
+
+        # マスクを [N*B, N, N] に畳む
+        mask_flat = adj_mask_per_agent.reshape(N * B, N, N) if adj_mask_per_agent is not None else None
+
+        z_flat = self._comm(e_flat, a_flat, adj_mask=mask_flat)  # [N*B, N, latent]
+
+        return z_flat.reshape(N, B, N, latent)
 
     def next(self, z, a):
         """z: [B, N, latent_dim], a: [B, N, action_dim]"""
