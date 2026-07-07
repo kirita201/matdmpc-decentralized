@@ -35,9 +35,10 @@ mlp_dim: 256
 n_com_layers: 2
 n_heads: 4
 
-# TD-MPC
-algo_type: "asynch"
-comm_range: 1.0
+# algo_type及びTD-MPC設定
+algo_type: "asynch"      # "asynch", "synch", "maddpg", "mappo"
+comm_type: "local"       # "none" (通信なし), "local" (局所通信), "global" (全体通信)
+comm_range: 1.0          # 通信範囲 (float('inf') で全体通信)
 horizon: 5
 iterations: 6
 num_samples: 512
@@ -71,3 +72,12 @@ prey_noise_std: 0.05       # 推論時に加えるガウスノイズ (0 = 決定
 save_freq: 4400
 resume: true
 ckpt_dir: "checkpoints"
+
+
+
+# MAPPO Specific
+ppo_epochs: 5
+ppo_clip_param: 0.2
+entropy_coef: 0.01
+rollout_length: 200      # 1エピソード長(episode_length)に合わせるか、その倍数が推奨
+gae_lambda: 0.95
