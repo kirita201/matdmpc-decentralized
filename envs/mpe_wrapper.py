@@ -666,7 +666,7 @@ class MPEWrapper:
         """
         self.env.reset()
         obs = self._get_obs()
-        info = {'agent_positions': np.array([a.state.p_pos for a in self.agents])}
+        info = {'agent_positions': self._get_agent_positions()}
         return obs, info
 
     def step(self, actions):
@@ -701,7 +701,7 @@ class MPEWrapper:
                 self.env.terminations[agent] or self.env.truncations[agent]
             )
         obs = self._get_obs()
-        info = {'agent_positions': np.array([a.state.p_pos for a in self.agents])}
+        info = {'agent_positions': self._get_agent_positions()}
         return obs, np.array(rewards, dtype=np.float32), bool(np.any(dones)), info
 
     # ── predator_prey step ───────────────────────────────
@@ -739,7 +739,7 @@ class MPEWrapper:
                 self.env.terminations[agent] or self.env.truncations[agent]
             )
         obs = self._get_obs()
-        info = {'agent_positions': np.array([agent.state.p_pos for agent in self.env.unwrapped.world.agents])}
+        info = {'agent_positions': self._get_agent_positions()}
         info['predator_catch'] = getattr(self.env.unwrapped.world, 'predator_catches', 0)
         self.env.unwrapped.world.predator_catches = 0 # ステップごとにリセット
         return obs, np.array(rewards, dtype=np.float32), bool(np.any(dones)), info
@@ -747,6 +747,16 @@ class MPEWrapper:
     # ── 観測収集 ────────────────────────────────────────
     def _get_obs(self):
         return np.stack([self.env.observe(a) for a in self.agents])
+    
+    def _get_agent_positions(self):
+        """self.agents (エージェント名のリスト) に対応する実際の座標を取得"""
+        positions = []
+        for name in self.agents:
+            for a in self.env.unwrapped.world.agents:
+                if a.name == name:
+                    positions.append(a.state.p_pos)
+                    break
+        return np.array(positions)
     
     def render(self):
         self.env.unwrapped.cam_range = 2.0
