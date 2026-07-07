@@ -36,8 +36,8 @@ class VMASWrapper:
         self.N = len(self.env.agents)
         self.agents = self.env.agents
         
-        sample_obs = self.reset()
-        self.obs_shape = sample_obs.shape[1:]  
+        sample_obs, _ = self.reset()
+        self.obs_shape = sample_obs.shape[1:]
         self.action_dim = self.env.action_space[0].shape[0] if hasattr(self.env, "action_space") else 2
 
     # 変更点2: データ収集時は環境モデル内での勾配計算を無効化し、メモリと計算時間を節約
