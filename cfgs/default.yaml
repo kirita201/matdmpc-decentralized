@@ -37,7 +37,7 @@ n_heads: 4
 
 # TD-MPC
 algo_type: "asynch"
-comm_range: inf
+comm_range: 1.0
 horizon: 5
 iterations: 6
 num_samples: 512
