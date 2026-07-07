@@ -50,6 +50,8 @@ class SpreadScenario(BaseScenario):
         self.n_vis_agents = n_visible_agents
         self.n_vis_lm = n_visible_landmarks
         self.obs_type = obs_type
+        # マップサイズをNに応じて設定 (3->1.0, 6->2.0, 15->3.0)
+        self.map_size = {3: 1.0, 6: 2.0, 15: 3.0}.get(N, 1.0)
 
     def make_world(self):
         world = World()
@@ -71,12 +73,12 @@ class SpreadScenario(BaseScenario):
     def reset_world(self, world, np_random):
         for agent in world.agents:
             agent.color = np.array([0.35, 0.35, 0.85])
-            agent.state.p_pos = np_random.uniform(-1, 1, world.dim_p)
+            agent.state.p_pos = np_random.uniform(-self.map_size, self.map_size, world.dim_p)
             agent.state.p_vel = np.zeros(world.dim_p)
             agent.state.c = np.zeros(world.dim_c)
         for lm in world.landmarks:
             lm.color = np.array([0.25, 0.25, 0.25])
-            lm.state.p_pos = np_random.uniform(-1, 1, world.dim_p)
+            lm.state.p_pos = np_random.uniform(-self.map_size, self.map_size, world.dim_p)
             lm.state.p_vel = np.zeros(world.dim_p)
 
     def is_collision(self, a1, a2):
@@ -98,7 +100,7 @@ class SpreadScenario(BaseScenario):
             min_dist = min(dists)
             rew -= min_dist
 
-            # 2. 占有ボーナス（ここを追加！）
+            # 2. 占有ボーナス
             # 距離が一定以下（例: 0.15）なら「カバーした」とみなして加点
             if min_dist < 0.15: 
                 rew += 1.0
@@ -143,7 +145,6 @@ class SpreadScenario(BaseScenario):
                 + lm_obs
                 + other_obs
             )
-        pass
 
 
 # ─────────────────────────────────────────────────────────
@@ -171,6 +172,8 @@ class PredatorPreyScenario(BaseScenario):
         self.n_vis_prey = n_visible_prey
         self.reward_type = reward_type
         self.obs_type = obs_type
+        # マップサイズをnum_adversariesに応じて設定 (3->1.0, 6->2.0, 15->3.0)
+        self.map_size = {3: 1.0, 6: 2.0, 15: 3.0}.get(num_adversaries, 1.0)
 
     def make_world(self):
         world = World()
@@ -201,12 +204,14 @@ class PredatorPreyScenario(BaseScenario):
             agent.color = (np.array([0.35, 0.85, 0.35])
                            if not agent.adversary
                            else np.array([0.85, 0.35, 0.35]))
-            agent.state.p_pos = np_random.uniform(-1, 1, world.dim_p)
+            agent.state.p_pos = np_random.uniform(-self.map_size, self.map_size, world.dim_p)
             agent.state.p_vel = np.zeros(world.dim_p)
             agent.state.c = np.zeros(world.dim_c)
         for lm in world.landmarks:
             lm.color = np.array([0.25, 0.25, 0.25])
-            lm.state.p_pos = np_random.uniform(-0.9, 0.9, world.dim_p)
+            # 障害物は境界線上に配置されないよう少し内側に
+            lm_bound = self.map_size - 0.1
+            lm.state.p_pos = np_random.uniform(-lm_bound, lm_bound, world.dim_p)
             lm.state.p_vel = np.zeros(world.dim_p)
 
     def is_collision(self, a1, a2):
@@ -264,21 +269,21 @@ class PredatorPreyScenario(BaseScenario):
         min_dist = min(dists)
         
         # 1. 距離報酬: 捕食者と離れるとプラス (上限 1.0)
-        # 距離が 1.0 以上離れていれば報酬が頭打ちになるように設定
         rew += min(min_dist, 1.0)
 
         for adv in self.adversaries(world):
             if self.is_collision(adv, agent):
                 rew -= 5.0
         
-        # 2. 範囲外ペナルティ (標準仕様の復元)
-        # 座標の絶対値が 0.9 を超えるとペナルティが発生し、1.0 を超えると指数関数的に増大する
+        # 2. 範囲外ペナルティ (マップサイズに応じたスケーリング)
         def bound(x):
-            if x < 0.9:
+            soft_bound = self.map_size - 0.1
+            hard_bound = self.map_size
+            if x < soft_bound:
                 return 0.0
-            if x < 1.0:
-                return (x - 0.9) * 10.0
-            return min(np.exp(2 * x - 2), 10.0)
+            if x < hard_bound:
+                return (x - soft_bound) * 10.0
+            return min(np.exp(2 * (x - hard_bound)), 10.0)
             
         for p in range(world.dim_p):
             x = abs(agent.state.p_pos[p])
@@ -289,27 +294,19 @@ class PredatorPreyScenario(BaseScenario):
         if not agent.adversary:
             # ─────────────────────────────────────────────────────────
             # 獲物 (Prey) 側の完全観測ロジック
-            # ・観測距離制限なし
-            # ・観測エンティティ数の制限なし（すべて観測）
-            # ・自分自身を他エージェントの観測対象から除外
             # ─────────────────────────────────────────────────────────
-            
-            # ── 障害物 (すべて) ──
             lm_obs = sorted(
                 [lm.state.p_pos - agent.state.p_pos
                  for lm in world.landmarks if not lm.boundary],
                 key=lambda x: np.linalg.norm(x)
             )
 
-            # ── 捕食者 (すべて) ──
             adv_obs = sorted(
                 [other.state.p_pos - agent.state.p_pos
                  for other in self.adversaries(world)],
                 key=lambda x: np.linalg.norm(x)
             )
 
-            # ── 他の獲物 (自分以外すべて) ──
-            # 自分自身 (p is not agent) を除外し、位置と速度を取得
             prey_list = sorted(
                 [(p.state.p_pos - agent.state.p_pos, p.state.p_vel)
                  for p in self.good_agents(world) if p is not agent],
@@ -318,7 +315,6 @@ class PredatorPreyScenario(BaseScenario):
             prey_pos_obs = [p[0] for p in prey_list]
             prey_vel_obs = [p[1] for p in prey_list]
 
-            # 制限やゼロパディングを行わず、すべての情報を結合して返す
             return np.concatenate(
                 [agent.state.p_vel, agent.state.p_pos]
                 + lm_obs
@@ -339,9 +335,9 @@ class PredatorPreyScenario(BaseScenario):
                 prey_vel = [p.state.p_vel for p in self.good_agents(world)]
                 return np.concatenate([agent.state.p_vel, agent.state.p_pos] + lm_obs + adv_obs + prey_pos + prey_vel)
             else:
-                # 【追加】範囲外パディング用のダミー値
-                # 位置は「遠く離れた場所」、速度は「停止状態」とする
-                dummy_pos = np.full(world.dim_p, 1.5)
+                # obs_range（通常1.0）より確実に大きい値（例として1.5倍や 2.0 など）で固定する
+                padding_val = self.obs_range * 1.5 
+                dummy_pos = np.full(world.dim_p, padding_val)
                 dummy_vel = np.zeros(world.dim_p)
                 
                 # ── 障害物: 近い順に n_vis_lm 個 ──
@@ -356,7 +352,6 @@ class PredatorPreyScenario(BaseScenario):
                     if i < len(lm_rel) and lm_rel[i][0] <= self.obs_range:
                         lm_obs.append(lm_rel[i][1])
                     else:
-                        # 【修正】ゼロではなくダミー座標でパディング
                         lm_obs.append(dummy_pos)
 
                 # ── 他の捕食者 ──
@@ -371,7 +366,6 @@ class PredatorPreyScenario(BaseScenario):
                     if i < len(other_adv) and other_adv[i][0] <= self.obs_range:
                         adv_obs.append(other_adv[i][1])
                     else:
-                        # 【修正】ゼロではなくダミー座標でパディング
                         adv_obs.append(dummy_pos)
 
                 # ── 獲物: 位置 + 速度 ──
@@ -389,7 +383,6 @@ class PredatorPreyScenario(BaseScenario):
                         prey_pos_obs.append(prey_list[i][1])
                         prey_vel_obs.append(prey_list[i][2])
                     else:
-                        # 【修正】位置はダミー座標、速度はゼロでパディング
                         prey_pos_obs.append(dummy_pos)
                         prey_vel_obs.append(dummy_vel)
 
@@ -400,7 +393,6 @@ class PredatorPreyScenario(BaseScenario):
                     + prey_pos_obs
                     + prey_vel_obs
                 )
-            pass
 
 
 # ─────────────────────────────────────────────────────────
@@ -626,7 +618,7 @@ class MPEWrapper:
             max_cycles=cfg.episode_length,
             continuous_actions=True,
             render_mode=self.render_mode,
-            reward_type=reward_type, # ▼ 追加
+            reward_type=reward_type,
             obs_type=obs_type
         )
         env_fn = make_env(RawEnvClass)
@@ -639,8 +631,6 @@ class MPEWrapper:
         self._prey_agents = [a for a in self.env.possible_agents if "adversary" not in a]
 
         # ── Prey ポリシーのロード ─────────────────────────────
-        # cfg.prey_ckpt_path が指定されていればそれを、なければデフォルトパスを探す。
-        # チェックポイントが見つからない場合はランダムポリシーにフォールバック。
         device = getattr(cfg, "device", "cpu")
         prey_noise = getattr(cfg, "prey_noise_std", 0.0)
 
@@ -666,7 +656,7 @@ class MPEWrapper:
         """
         self.env.reset()
         obs = self._get_obs()
-        info = {'agent_positions': self._get_agent_positions()}
+        info = {'agent_positions': np.array([a.state.p_pos for a in self.agents])}
         return obs, info
 
     def step(self, actions):
@@ -701,24 +691,19 @@ class MPEWrapper:
                 self.env.terminations[agent] or self.env.truncations[agent]
             )
         obs = self._get_obs()
-        info = {'agent_positions': self._get_agent_positions()}
+        info = {'agent_positions': np.array([a.state.p_pos for a in self.agents])}
         return obs, np.array(rewards, dtype=np.float32), bool(np.any(dones)), info
 
     # ── predator_prey step ───────────────────────────────
     def _step_predprey(self, actions):
         """捕食者の行動を渡し、獲物は訓練済みポリシー (なければランダム) で動かす。"""
-        # 獲物の現在観測を取得してポリシーで行動決定
         prey_obs = np.stack([self.env.observe(a) for a in self._prey_agents])
         prey_actions = self._prey_policy.act(prey_obs)  # [n_prey, action_dim]
 
-        # ──【追加】デフォルト 0.0 の random_ratio を使ってブレンド ──
         random_ratio = getattr(self, "random_ratio", 0.0)
         if random_ratio > 0.0:
-            # [-1, 1] の一様乱数（完全ランダム行動）を生成
             random_actions = np.random.uniform(0.0, 1.0, size=prey_actions.shape)
-            # 行動をブレンド
             prey_actions = (1.0 - random_ratio) * prey_actions + random_ratio * random_actions
-
             prey_actions = np.clip(prey_actions, 0.0, 1.0).astype(np.float32)
 
         adv_idx  = 0
@@ -739,7 +724,7 @@ class MPEWrapper:
                 self.env.terminations[agent] or self.env.truncations[agent]
             )
         obs = self._get_obs()
-        info = {'agent_positions': self._get_agent_positions()}
+        info = {'agent_positions': np.array([agent.state.p_pos for agent in self.env.unwrapped.world.agents])}
         info['predator_catch'] = getattr(self.env.unwrapped.world, 'predator_catches', 0)
         self.env.unwrapped.world.predator_catches = 0 # ステップごとにリセット
         return obs, np.array(rewards, dtype=np.float32), bool(np.any(dones)), info
@@ -748,18 +733,10 @@ class MPEWrapper:
     def _get_obs(self):
         return np.stack([self.env.observe(a) for a in self.agents])
     
-    def _get_agent_positions(self):
-        """self.agents (エージェント名のリスト) に対応する実際の座標を取得"""
-        positions = []
-        for name in self.agents:
-            for a in self.env.unwrapped.world.agents:
-                if a.name == name:
-                    positions.append(a.state.p_pos)
-                    break
-        return np.array(positions)
-    
     def render(self):
-        self.env.unwrapped.cam_range = 2.0
+        # Nに応じてマップサイズを取得し、描画範囲(cam_range)をそれに合わせる
+        map_size = {3: 1.0, 6: 2.0, 15: 3.0}.get(self.N, 1.0)
+        self.env.unwrapped.cam_range = map_size + 1.0
         return self.env.render()
 
 
