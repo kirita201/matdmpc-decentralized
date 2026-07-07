@@ -145,8 +145,15 @@ class SynchMATDMPC:
         
         # 最終行動の決定
         final_actions = torch.zeros(N, A, device=self.device)
+        
+        # NumPy配列をPyTorchのテンソルに変換し、GPUに配置
+        score_tensor = torch.tensor(score_np, dtype=torch.float32, device=self.device)
+
         for n in range(N):
-            best_idx = np.random.choice(self.cfg.num_elites, p=score_np[n])
+            # torch.multinomial でサンプリング（合計が1でなくてもエラーになりません）
+            # num_samples=1 で1つ選び、.item() で純粋な数値(int)として取り出す
+            best_idx = torch.multinomial(score_tensor[n], num_samples=1).item()
+            
             a = elite_actions_all[n, 0, best_idx]
             if not eval_mode:
                 a = a + std[0, n] * torch.randn(A, device=self.device)
