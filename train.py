@@ -1,4 +1,4 @@
-# train.py (修正版)
+# train.py (修正・バッファ保存対応版)
 import os
 import torch
 import numpy as np
@@ -78,6 +78,7 @@ def train():
     ckpt_dir.mkdir(parents=True, exist_ok=True)
     model_ckpt_path = ckpt_dir / "model_latest.pt"
     state_ckpt_path = ckpt_dir / "state_latest.pt"
+    buffer_ckpt_path = ckpt_dir / "buffer_latest.pt"  # バッファ用の保存パスを追加
     
     temp_env = make_env(cfg)
     cfg.obs_shape = list(temp_env.obs_shape)
@@ -107,6 +108,7 @@ def train():
     start_step = 0
     episode_idx = 0
 
+    # 学習のレジューム（再開）処理
     if getattr(cfg, "resume", False):
         if model_ckpt_path.exists() and state_ckpt_path.exists():
             print(">>> Resuming training from checkpoints...")
@@ -114,6 +116,13 @@ def train():
             state = torch.load(state_ckpt_path)
             start_step = state['step']
             episode_idx = state['episode_idx']
+            
+            # バッファのロード処理を追加
+            if buffer is not None and buffer_ckpt_path.exists():
+                print(">>> Resuming replay buffer state...")
+                buffer.load(buffer_ckpt_path)
+            elif buffer is not None:
+                print(">>> Warning: Replay buffer checkpoint not found. Starting with an empty buffer.")
 
     initial_random_ratio = 0.8
     decay_steps = cfg.train_steps * 0.3
@@ -207,9 +216,16 @@ def train():
         if episode_idx % 5 == 0:
             print(f"Step: {step}, Episode: {episode_idx}, Reward: {ep_reward:.3f}")
 
+        # --- チェックポイントの保存処理 ---
         if step > start_step and step % getattr(cfg, "save_freq", 50000) == 0:
             agent.save(model_ckpt_path)
             torch.save({'step': step, 'episode_idx': episode_idx}, state_ckpt_path)
+            
+            # バッファの保存処理を追加
+            if buffer is not None:
+                buffer.save(buffer_ckpt_path)
+                
+            print(f">>> Checkpoints (Model, State, Buffer) saved at Step {step}")
 
         if step % cfg.eval_freq == 0 and step > 0:
             eval_reward = evaluate(eval_env, agent, cfg.eval_episodes, step, log_dir, save_gif=True)
