@@ -37,7 +37,8 @@ def evaluate(env, agent, num_episodes, step, log_dir, save_gif=False):
     episode_rewards = []
     frames = []
     for ep in range(num_episodes):
-        obs, done, ep_reward, t = env.reset(), False, 0, 0
+        obs, info = env.reset()             
+        done, ep_reward, t = False, 0, 0
         while not done:
             if save_gif and ep == 0:
                 frame = env.render()
