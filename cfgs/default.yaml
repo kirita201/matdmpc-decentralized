@@ -16,7 +16,7 @@ obs_type: "local"       # "global" or "local"
 # Training
 train_steps: 500000
 episode_length: 50
-seed_steps: 4400
+seed_steps: 5000
 update_freq: 10
 action_repeat: 1
 eval_freq: 10000
