@@ -114,14 +114,60 @@ class ReplayBuffer:
         torch.save(state, filepath)
 
     def load(self, filepath):
-        """バッファの状態をデバイスに読み込み"""
+        """バッファの状態をデバイスに読み込み（容量変更・リングバッファの再配置対応版）"""
         checkpoint = torch.load(filepath, map_location=self.device)
-        self._obs.copy_(checkpoint['obs'])
-        self._action.copy_(checkpoint['action'])
-        self._reward.copy_(checkpoint['reward'])
-        self._done.copy_(checkpoint['done'])
-        self._priorities.copy_(checkpoint['priorities'])
-        self.idx = checkpoint['idx']
-        self._full = checkpoint['full']
+        
+        old_capacity = checkpoint['obs'].shape[0] - 1
+        old_idx = checkpoint['idx']
+        old_full = checkpoint['full']
+        
+        # 容量が変わらない場合はそのままロード
+        if old_capacity == self.capacity:
+            self._obs.copy_(checkpoint['obs'])
+            self._action.copy_(checkpoint['action'])
+            self._reward.copy_(checkpoint['reward'])
+            self._done.copy_(checkpoint['done'])
+            self._priorities.copy_(checkpoint['priorities'])
+            self.idx = old_idx
+            self._full = old_full
+            self._valid_mask_dirty = True
+            print(f"[ReplayBuffer] Loaded buffer state from {filepath} (Same capacity)")
+            return
+
+        print(f"[ReplayBuffer] Adapting buffer capacity from {old_capacity} to {self.capacity}...")
+        
+        # 以前のバッファに格納されていた実際のデータ数
+        old_stored_count = old_capacity if old_full else old_idx
+        
+        # 新しいバッファに引き継ぐデータ数
+        copy_len = min(self.capacity, old_stored_count)
+        
+        # 有効なデータのインデックスを古い順（時系列順）に並べた配列を作成
+        if old_full:
+            # 満杯だった場合: idxから末尾までが古く、0からidx-1までが新しい
+            indices = torch.arange(old_capacity, device=self.device)
+            indices = (indices + old_idx) % old_capacity
+        else:
+            # 満杯でなかった場合: 0からidx-1までが有効
+            indices = torch.arange(old_idx, device=self.device)
+            
+        # 新しい容量に収まりきらない場合は、最新のデータを優先して残す
+        indices = indices[-copy_len:]
+        
+        # データを先頭(0)から順に詰め直す
+        self._obs[:copy_len] = checkpoint['obs'][:-1][indices]
+        self._action[:copy_len] = checkpoint['action'][indices]
+        self._reward[:copy_len] = checkpoint['reward'][indices]
+        self._done[:copy_len] = checkpoint['done'][indices]
+        self._priorities[:copy_len] = checkpoint['priorities'][indices]
+        
+        # 元のバッファで最新だったデータの「次」の観測値（next_obs用）を末尾にセット
+        next_idx = (indices[-1] + 1) % old_capacity
+        self._obs[copy_len] = checkpoint['obs'][next_idx]
+        
+        # ★ご指摘の通り、新しい状態に合わせて正しくフラグとインデックスを更新
+        self.idx = copy_len % self.capacity
+        self._full = (copy_len == self.capacity) 
         self._valid_mask_dirty = True
-        print(f"[ReplayBuffer] Loaded buffer state from {filepath}")
+        
+        print(f"[ReplayBuffer] Successfully adapted capacity. New idx: {self.idx}, Full: {self._full}")

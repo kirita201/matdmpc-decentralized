@@ -126,7 +126,7 @@ def train():
                 print(">>> Warning: Replay buffer checkpoint not found. Starting with an empty buffer.")
 
     initial_random_ratio = 0.8
-    decay_steps = cfg.train_steps * 0.3
+    decay_steps = 150000
 
     for step in range(start_step, cfg.train_steps + cfg.episode_length, cfg.episode_length):
         decay_ratio = max(0.0, 1.0 - (step / decay_steps))

@@ -14,7 +14,7 @@ obs_type: "local"       # "global" or "local"
 # NOTE: obs_shape, action_dim は実行時に実測・自動設定されます
 
 # Training
-train_steps: 500000
+train_steps: 800000
 episode_length: 50
 seed_steps: 5000
 update_freq: 10
