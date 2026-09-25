@@ -224,12 +224,12 @@ class AsynchMATDMPC:
                                     F.huber_loss(
                                         q_joint1.float(), td_target.float(),
                                         reduction='none',
-                                        delta=getattr(self.cfg, 'value_huber_delta', 1.0),
+                                        delta=getattr(self.cfg, 'value_huber_delta', 20.0),
                                     )
                                     + F.huber_loss(
                                         q_joint2.float(), td_target.float(),
                                         reduction='none',
-                                        delta=getattr(self.cfg, 'value_huber_delta', 1.0),
+                                        delta=getattr(self.cfg, 'value_huber_delta', 20.0),
                                     )
                                 ).squeeze(-1)
                     priority_loss += rho * (h.l1(q_joint1, td_target, reduce=False) + h.l1(q_joint2, td_target, reduce=False)).squeeze(-1)
