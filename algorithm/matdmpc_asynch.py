@@ -4,6 +4,7 @@ import torch
 from copy import deepcopy
 import algorithm.helper as h
 from algorithm.models import MACLM  # モデルファイルを models.py に統一することを想定
+import torch.nn.functional as F
 
 class AsynchMATDMPC:
     def __init__(self, cfg):
@@ -219,7 +220,18 @@ class AsynchMATDMPC:
                     rho = (self.cfg.rho ** t)
                     consistency_loss += rho * h.mse(e, next_e, reduce=False).mean(dim=(1,2)) 
                     reward_loss += rho * h.mse(reward_pred, reward[t], reduce=False).mean(dim=1)
-                    value_loss += rho * (h.mse(q_joint1, td_target, reduce=False) + h.mse(q_joint2, td_target, reduce=False)).squeeze(-1)
+                    value_loss += rho * (
+                                    F.huber_loss(
+                                        q_joint1.float(), td_target.float(),
+                                        reduction='none',
+                                        delta=getattr(self.cfg, 'value_huber_delta', 1.0),
+                                    )
+                                    + F.huber_loss(
+                                        q_joint2.float(), td_target.float(),
+                                        reduction='none',
+                                        delta=getattr(self.cfg, 'value_huber_delta', 1.0),
+                                    )
+                                ).squeeze(-1)
                     priority_loss += rho * (h.l1(q_joint1, td_target, reduce=False) + h.l1(q_joint2, td_target, reduce=False)).squeeze(-1)
 
             # ────────────────────────────────────────────────────────
