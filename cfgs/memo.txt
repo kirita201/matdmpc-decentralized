@@ -1,0 +1,104 @@
+研究室GPUサーバーで動かすとき
+wsl
+cd
+python train.py
+tensorboard --logdir logs
+
+
+
+
+逃げ訓練
+python train_prey.py --N 3 --steps 700000
+python train_prey.py --N 6 --steps 700000
+python train_prey.py --N 15 --steps 1000000
+
+
+
+
+アルゴリズム設定パターン
+
+    algo_type="synch",
+    comm_type="global",
+    comm_range=float('inf')
+
+    algo_type="asynch",
+    comm_type="global",
+    comm_range=float('inf')
+
+    algo_type="asynch",
+    comm_type="local",
+    comm_range=1.0
+
+    algo_type="maddpg",
+    comm_type="global",
+    comm_range=float('inf')
+
+    algo_type="maddpg",
+    comm_type="local",
+    comm_range=1.0
+
+    algo_type="mappo",
+    comm_type="global",
+    comm_range=float('inf')
+
+    algo_type="mappo",
+    comm_type="local",
+    comm_range=1.0
+
+
+環境設定パターン
+
+    env_type="vmas",
+    task="navigation",
+    num_agents=6,
+    obs_type="local",
+    reward_type="individual",
+    ep_length=200,
+    train_steps=2000000
+
+
+    env_type="mpe",
+    task="predator_prey",
+    num_agents=6,
+    obs_type="local",
+    reward_type="individual",
+    ep_length=50,
+    train_steps=500000
+
+
+    env_type="mpe",
+    task="predator_prey",
+    num_agents=6,
+    obs_type="global",
+    reward_type="global",
+    ep_length=50,
+    train_steps=500000
+
+
+    env_type="mpe",
+    task="predator_prey",
+    num_agents=3,
+    obs_type="local",
+    reward_type="global",
+    ep_length=50,
+    train_steps=500000
+
+
+
+
+
+
+－MATDMPC
+　－algorithm
+　－cfgs
+　－envs
+　－logs
+　－checkpoints
+　－eval_results
+　・train.py
+
+
+
+
+
+
