@@ -74,8 +74,15 @@ class SynchMATDMPC:
             self._prev_mean.zero_()
         else:
             self._prev_mean[:, :-1] = self._prev_mean[:, 1:].clone()
-            z_est = self.model.communicate(e0, self._prev_mean[:, 0].unsqueeze(0), adj_mask=None)
-            self._prev_mean[:, -1] = self.model.pi(z_est, 0).squeeze(0)
+
+            # 保存している系列の末尾を、一個前の行動で埋める
+            if self.cfg.horizon >= 2:
+                self._prev_mean[:, -1] = self._prev_mean[:, -2]
+
+            # 今回使う horizon が cfg.horizon より短い場合も、
+            # 実際に使う暫定系列の末尾を一個前と同じにする
+            if horizon >= 2:
+                self._prev_mean[:, horizon - 1] = self._prev_mean[:, horizon - 2]
 
         num_pi_trajs = int(self.cfg.mixture_coef * self.cfg.num_samples)
         total_samples = self.cfg.num_samples + num_pi_trajs

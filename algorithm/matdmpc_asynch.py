@@ -90,8 +90,15 @@ class AsynchMATDMPC:
             self._prev_mean.zero_()
         else:
             self._prev_mean[:, :-1] = self._prev_mean[:, 1:].clone()
-            z_est = self.model.communicate(e0, self._prev_mean[:, 0].unsqueeze(0), adj_mask=adj_mask_1)
-            self._prev_mean[:, -1] = self.model.pi(z_est, 0).squeeze(0)
+
+            # 保存している系列の末尾を、一個前の行動で埋める
+            if self.cfg.horizon >= 2:
+                self._prev_mean[:, -1] = self._prev_mean[:, -2]
+
+            # 今回使う horizon が cfg.horizon より短い場合も、
+            # 実際に使う暫定系列の末尾を一個前と同じにする
+            if horizon >= 2:
+                self._prev_mean[:, horizon - 1] = self._prev_mean[:, horizon - 2]
 
         num_pi_trajs = int(self.cfg.mixture_coef * self.cfg.num_samples)
         total_samples = self.cfg.num_samples + num_pi_trajs
@@ -112,16 +119,63 @@ class AsynchMATDMPC:
 
                 # 2. Policy サンプル
                 if num_pi_trajs > 0:
-                    a_pi = torch.empty(H, N, num_pi_trajs, A, device=self.device)
-                    e_curr = e0.repeat(num_pi_trajs, 1, 1)
-                    adj_mask_pi = adj_mask_1.expand(num_pi_trajs, N, N) if adj_mask_1 is not None else None
+                    S = num_pi_trajs
+                    a_pi = torch.empty(H, N, S, A, device=self.device)
+
+                    # e_views[i, s]: エージェントi視点で予測した候補sの状態
+                    e_views = (
+                        e0.unsqueeze(0)
+                        .expand(N, S, N, -1)
+                        .clone()
+                    )  # [N, S, N, latent]
+
+                    if adj_mask_1 is not None:
+                        view_masks_pi = (
+                            self._make_view_masks(adj_mask_1)
+                            .expand(N, S, N, N)
+                        )
+                    else:
+                        view_masks_pi = None
+
+                    idx = torch.arange(N, device=self.device)
+
                     for t in range(H):
-                        a_joint = self._prev_mean[:, t].unsqueeze(0).repeat(num_pi_trajs, 1, 1)
-                        z_curr = self.model.communicate(e_curr, a_joint, adj_mask=adj_mask_pi)
-                        pi_out = self.model.pi(z_curr, self.std)
-                        a_pi[t] = pi_out.permute(1, 0, 2)
-                        a_joint = pi_out
-                        e_curr, _ = self.model.next(self.model.communicate(e_curr, a_joint, adj_mask=adj_mask_pi), a_joint)
+                        # 方策入力の仮行動には従来どおりprev_meanを使用
+                        a_guess = (
+                            self._prev_mean[:, t]
+                            .unsqueeze(0)
+                            .expand(S, N, A)
+                        )  # [S, N, A]
+
+                        z_views = self.model.communicate_per_agent(
+                            e_views,
+                            a_guess,
+                            adj_mask_per_agent=view_masks_pi,
+                        )  # [N, S, N, latent]
+
+                        pi_views = self.model.pi(z_views, self.std)
+                        a_self = pi_views[idx, :, idx, :]  # [N, S, A]
+                        a_pi[t] = a_self
+
+                        # 各エージェントが自分の視点で出した行動を組み合わせる
+                        a_joint = a_self.permute(1, 0, 2)  # [S, N, A]
+
+                        z_next = self.model.communicate_per_agent(
+                            e_views,
+                            a_joint,
+                            adj_mask_per_agent=view_masks_pi,
+                        )
+
+                        z_flat = z_next.reshape(N * S, N, -1)
+                        a_flat = (
+                            a_joint.unsqueeze(0)
+                            .expand(N, S, N, A)
+                            .reshape(N * S, N, A)
+                        )
+
+                        next_e_flat, _ = self.model.next(z_flat, a_flat)
+                        e_views = next_e_flat.reshape(N, S, N, -1)
+
                     actions_all = torch.cat([a_random, a_pi], dim=2)
                 else:
                     actions_all = a_random
@@ -135,7 +189,15 @@ class AsynchMATDMPC:
                 # 4. 一括評価用展開
                 e_all = e0.repeat(N * B, 1, 1)
                 joint_flat = joint_all.permute(1, 0, 2, 3, 4).reshape(H, N * B, N, A)
-                adj_mask_NB = adj_mask_1.expand(N * B, N, N) if adj_mask_1 is not None else None
+                if adj_mask_1 is not None:
+                    # [N, 1, N, N] -> [N, B, N, N] -> [N * B, N, N]
+                    view_masks_1 = self._make_view_masks(adj_mask_1)
+                    adj_mask_NB = (
+                        view_masks_1.expand(N, B, N, N)
+                        .reshape(N * B, N, N)
+                    )
+                else:
+                    adj_mask_NB = None
 
                 values_flat = self.estimate_value(e_all, joint_flat, horizon, adj_mask=adj_mask_NB)
                 values = torch.stack([values_flat[n * B:(n + 1) * B, n] for n in range(N)], dim=0)
@@ -238,11 +300,14 @@ class AsynchMATDMPC:
             # パターンB：局所通信ルート (エージェント個別視点に展開してマスク処理)
             # ────────────────────────────────────────────────────────
             else:
-                # [B, N, N] -> [N, B, N, N] にブロードキャスト展開
-                adj_mask_per_agent = adj_mask_global.unsqueeze(0).expand(N, -1, -1, -1).contiguous()
+                adj_mask_per_agent = self._make_view_masks(adj_mask_global)
                 e_per_agent = e_global.unsqueeze(0).expand(N, -1, -1, -1).contiguous()  # [N, B, N, latent]
 
+                # pi_lossで使う、各時刻の「視点別予測状態」
+                es_per_agent = []
+
                 for t in range(self.cfg.horizon):
+                    es_per_agent.append(e_per_agent.detach())
                     # 各エージェント独立通信: [N, B, N, latent]
                     z_per_agent = self.model.communicate_per_agent(
                         e_per_agent, action[t], adj_mask_per_agent=adj_mask_per_agent
@@ -351,12 +416,71 @@ class AsynchMATDMPC:
 
         with torch.autocast(device_type=self.device.type, dtype=torch.bfloat16):
             pi_loss = 0
+
             for t in range(self.cfg.horizon):
-                e_t = es_global[t]
-                a_t = self.model.pi(self.model.communicate(e_t, action[t], adj_mask=adj_mask_global), 0)
-                z_t = self.model.communicate(e_t, a_t, adj_mask=adj_mask_global)
-                q1, q2 = self.model.Q(z_t, a_t)
-                pi_loss += -torch.min(q1, q2).mean() * (self.cfg.rho ** t)
+                if adj_mask_global is None:
+                    # 全体通信ルート：従来の処理を維持
+                    e_t = es_global[t]
+
+                    z_pre = self.model.communicate(
+                        e_t,
+                        action[t],
+                        adj_mask=None,
+                    )
+                    a_t = self.model.pi(z_pre, 0)
+
+                    z_eval = self.model.communicate(
+                        e_t,
+                        a_t,
+                        adj_mask=None,
+                    )
+                    q1, q2 = self.model.Q(z_eval, a_t)
+
+                else:
+                    # 局所通信ルート：価値損失と同じ視点別状態を使用
+                    e_views = es_per_agent[t]  # [N, B, N, latent]
+
+                    agent_idx = torch.arange(N, device=self.device)
+
+                    # まず、リプレイ行動を仮行動として通信し、
+                    # エージェントi視点の表現を得る
+                    z_pre_views = self.model.communicate_per_agent(
+                        e_views,
+                        action[t],
+                        adj_mask_per_agent=adj_mask_per_agent,
+                    )  # [N, B, N, latent]
+
+                    # 各視点iの「エージェントi自身」の表現だけを取り出す
+                    z_pre_self = z_pre_views[
+                        agent_idx, :, agent_idx, :
+                    ]  # [N, B, latent]
+
+                    # 各エージェントが、自分の視点の情報から行動を出す
+                    a_self = self.model.pi(
+                        z_pre_self,
+                        0,
+                    )  # [N, B, action_dim]
+
+                    # [N, B, action_dim] -> [B, N, action_dim]
+                    a_t = a_self.permute(1, 0, 2)
+
+                    # 得られた方策行動で再び通信し、Qを評価
+                    z_eval_views = self.model.communicate_per_agent(
+                        e_views,
+                        a_t,
+                        adj_mask_per_agent=adj_mask_per_agent,
+                    )  # [N, B, N, latent]
+
+                    z_eval_self = z_eval_views[
+                        agent_idx, :, agent_idx, :
+                    ].permute(1, 0, 2)  # [B, N, latent]
+
+                    q1, q2 = self.model.Q(z_eval_self, a_t)
+
+                pi_loss += (
+                    -torch.min(q1, q2).mean()
+                    * (self.cfg.rho ** t)
+                )
         
         pi_loss.backward()
         torch.nn.utils.clip_grad_norm_(self.model._pi.parameters(), self.cfg.grad_clip_norm)
@@ -392,3 +516,40 @@ class AsynchMATDMPC:
         self.optim.load_state_dict(checkpoint['optim'])
         self.pi_optim.load_state_dict(checkpoint['pi_optim'])
         print(f"[AsynchMATDMPC] Loaded checkpoints from {filepath}")
+
+    def _make_view_masks(self, adj_mask_global):
+        """
+        adj_mask_global: [B, N, N]
+            [b, j, k] = jがkを直接参照できるか
+
+        戻り値: [N, B, N, N]
+            [i, b, j, k] = i視点の予測において、
+                        jがkを参照できるか
+
+        i視点では、iの近傍集合内にあるj, kについてのみ
+        元の距離グラフの辺を維持する。
+        集合外のトークンは自分自身だけ参照可能にする。
+        """
+        if adj_mask_global is None:
+            return None
+
+        N = adj_mask_global.size(-1)
+
+        # members[i, b, j]:
+        # サンプルbにおいて、jが視点iの近傍に含まれるか
+        members = adj_mask_global.permute(1, 0, 2)  # [N, B, N]
+
+        # 視点iの近傍集合内のj, kに限定し、
+        # その中でも元のグラフで許された通信だけを残す
+        view_masks = (
+            adj_mask_global.unsqueeze(0)    # [1, B, N, N]
+            & members.unsqueeze(-1)         # [N, B, N, 1]: jが近傍
+            & members.unsqueeze(-2)         # [N, B, 1, N]: kが近傍
+        )
+
+        # 近傍外のトークンも含め、各トークンの自己参照は許可。
+        # 参照先ゼロの行を防ぎ、NaNを避ける。
+        eye = torch.eye(N, dtype=torch.bool, device=adj_mask_global.device)
+        view_masks = view_masks | eye.view(1, 1, N, N)
+
+        return view_masks
