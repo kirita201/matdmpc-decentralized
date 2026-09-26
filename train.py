@@ -48,8 +48,14 @@ def evaluate(env, agent, num_episodes, step, log_dir, save_gif=False):
                     else:
                         frames.append(frame)
 
-            action = agent.plan(obs, eval_mode=True, step=step, t0=(t==0))
-            obs, reward, done, _ = env.step(action.cpu().numpy())
+            action = agent.plan(
+                obs,
+                positions=info.get("agent_positions"),
+                eval_mode=True,
+                step=step,
+                t0=(t == 0),
+            )
+            obs, reward, done, info = env.step(action.cpu().numpy())
             ep_reward += np.sum(reward)
             t += 1
         episode_rewards.append(ep_reward)
