@@ -201,7 +201,11 @@ class SynchMATDMPC:
                     nq_joint1, nq_joint2 = self.model_target.Q_joint(nq1, nq2, next_e)
                     nq_joint = torch.min(nq_joint1, nq_joint2)
                     
-                    joint_reward = reward[t].sum(dim=1, keepdim=True)
+                    joint_reward = (
+                        reward[t][:, :1]
+                        if getattr(self.cfg, "reward_type", "individual") == "global"
+                        else reward[t].sum(dim=1, keepdim=True)
+                    )
                     td_target = joint_reward + self.cfg.discount * nq_joint
                     
                 es.append(e.detach())
@@ -210,17 +214,9 @@ class SynchMATDMPC:
                 consistency_loss += rho * h.mse(e, next_e, reduce=False).mean(dim=(1,2)) 
                 reward_loss += rho * h.mse(reward_pred, reward[t], reduce=False).mean(dim=1)
                 value_loss += rho * (
-                                F.huber_loss(
-                                    q_joint1.float(), td_target.float(),
-                                    reduction='none',
-                                    delta=getattr(self.cfg, 'value_huber_delta', 20.0),
-                                )
-                                + F.huber_loss(
-                                    q_joint2.float(), td_target.float(),
-                                    reduction='none',
-                                    delta=getattr(self.cfg, 'value_huber_delta', 20.0),
-                                )
-                            ).squeeze(-1)
+                    h.mse(q_joint1.float(), td_target.float(), reduce=False)
+                    + h.mse(q_joint2.float(), td_target.float(), reduce=False)
+                ).squeeze(-1)
                 priority_loss += rho * (h.l1(q_joint1, td_target, reduce=False) + h.l1(q_joint2, td_target, reduce=False)).squeeze(-1)
 
             total_loss = (

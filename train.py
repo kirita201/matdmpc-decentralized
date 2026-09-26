@@ -33,7 +33,7 @@ def set_seed(seed):
     torch.manual_seed(seed)
     torch.cuda.manual_seed_all(seed)
 
-def evaluate(env, agent, num_episodes, step, log_dir, save_gif=False):
+def evaluate(env, agent, num_episodes, step, log_dir, reward_type, save_gif=False):
     episode_rewards = []
     frames = []
     for ep in range(num_episodes):
@@ -56,7 +56,7 @@ def evaluate(env, agent, num_episodes, step, log_dir, save_gif=False):
                 t0=(t == 0),
             )
             obs, reward, done, info = env.step(action.cpu().numpy())
-            ep_reward += np.sum(reward)
+            ep_reward += recorded_reward(reward, reward_type)
             t += 1
         episode_rewards.append(ep_reward)
     
@@ -65,6 +65,12 @@ def evaluate(env, agent, num_episodes, step, log_dir, save_gif=False):
         imageio.mimsave(gif_path, frames, fps=15)
 
     return np.mean(episode_rewards)
+
+def recorded_reward(reward, reward_type):
+    rewards = np.asarray(reward)
+    if reward_type == "global":
+        return float(rewards.reshape(-1)[0])
+    return float(rewards.sum())
 
 def train():
     cfg = load_cfg()
@@ -177,7 +183,7 @@ def train():
 
             obs = next_obs
             info = next_info
-            ep_reward += np.sum(reward)
+            ep_reward += recorded_reward(reward, reward_type)
             
             if "goals_occupied_now" in info: ep_goals.append(info["goals_occupied_now"])
             if "collisions_now" in info: ep_cols.append(info["collisions_now"])
@@ -235,7 +241,7 @@ def train():
             print(f">>> Checkpoints (Model, State, Buffer) saved at Step {step}")
 
         if step % cfg.eval_freq == 0 and step > 0:
-            eval_reward = evaluate(eval_env, agent, cfg.eval_episodes, step, log_dir, save_gif=True)
+            eval_reward = evaluate(eval_env, agent, cfg.eval_episodes, step, log_dir, reward_type, save_gif=True)
             print(f">>> EVAL at Step {step}: Reward = {eval_reward:.3f}")
 
 if __name__ == '__main__':
