@@ -357,7 +357,7 @@ class AsynchMATDMPC:
                     es_global.append(e_global.detach())
 
                     # 個別状態の更新
-                    e_per_agent = next_e_per_agent.detach()
+                    e_per_agent = next_e_per_agent
 
                     # ── 局所通信マスクを考慮した損失計算 ──
                     rho = self.cfg.rho ** t
