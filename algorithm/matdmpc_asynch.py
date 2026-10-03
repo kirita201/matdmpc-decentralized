@@ -314,14 +314,14 @@ class AsynchMATDMPC:
                     # CTDE: MixingNetwork はグローバルな情報を集約
                     q1, q2 = self.model.Q(z_self, action[t])
 
-                    # [N, B, N, latent] から、各視点 i の自己表現 e_per_agent[i, :, i, :]
-                    # を取り出し、[B, N, latent] にする。
-                    e_self_global = torch.stack(
-                        [e_per_agent[i, :, i, :] for i in range(N)],
-                        dim=1,
-                    )
+                    # CTDE: 各時刻の実観測をエンコードした状態をQMIXに渡す
+                    current_obs = obs if t == 0 else next_obses[t - 1]
+                    e_qmix_state = self.model.encode(current_obs)
 
-                    q_joint1, q_joint2 = self.model.Q_joint(q1, q2, e_self_global)
+                    q1, q2 = self.model.Q(z_self, action[t])
+                    q_joint1, q_joint2 = self.model.Q_joint(
+                        q1, q2, e_qmix_state
+                    )
 
                     # 遷移予測 (N*B バッチにフラット化して計算)
                     a_flat = action[t].unsqueeze(0).expand(N, -1, -1, -1).reshape(N * B, N, -1)
