@@ -313,7 +313,15 @@ class AsynchMATDMPC:
 
                     # CTDE: MixingNetwork はグローバルな情報を集約
                     q1, q2 = self.model.Q(z_self, action[t])
-                    q_joint1, q_joint2 = self.model.Q_joint(q1, q2, e_global)
+
+                    # [N, B, N, latent] から、各視点 i の自己表現 e_per_agent[i, :, i, :]
+                    # を取り出し、[B, N, latent] にする。
+                    e_self_global = torch.stack(
+                        [e_per_agent[i, :, i, :] for i in range(N)],
+                        dim=1,
+                    )
+
+                    q_joint1, q_joint2 = self.model.Q_joint(q1, q2, e_self_global)
 
                     # 遷移予測 (N*B バッチにフラット化して計算)
                     a_flat = action[t].unsqueeze(0).expand(N, -1, -1, -1).reshape(N * B, N, -1)
@@ -351,10 +359,7 @@ class AsynchMATDMPC:
                         )
                         td_target = joint_reward + self.cfg.discount * nq_joint
 
-                    # 次ステップのグローバル状態の更新 (MixingNetworkへの配信用)
-                    z_global = self.model.communicate(e_global, action[t], adj_mask=adj_mask_global)
-                    e_global, _ = self.model.next(z_global, action[t])
-                    es_global.append(e_global.detach())
+                
 
                     # 個別状態の更新
                     e_per_agent = next_e_per_agent
