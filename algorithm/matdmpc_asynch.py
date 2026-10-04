@@ -527,6 +527,11 @@ class AsynchMATDMPC:
                     rho = self.cfg.rho ** t
 
                     # ---------- 世界モデルの損失 ----------
+                    # consistency_raw: [N, B, N]
+                    # 軸の意味:
+                    #   0: 視点となるエージェント i
+                    #   1: replay buffer のサンプル b
+                    #   2: 予測対象のエージェント j
                     consistency_raw = h.mse(
                         next_e_roll_views,
                         next_e_target.unsqueeze(0).expand(
@@ -535,28 +540,90 @@ class AsynchMATDMPC:
                         reduce=False,
                     ).mean(dim=-1)  # [N, B, N]
 
-                    consistency_masked = (
-                        (consistency_raw * neighbor_mask).sum(dim=2)
-                        / neighbor_count
+                    # 対角マスク [N, 1, N]
+                    # self_mask[i, 0, j] = True iff i == j
+                    self_mask = torch.eye(
+                        N,
+                        dtype=neighbor_mask.dtype,
+                        device=neighbor_mask.device,
+                    ).unsqueeze(1)
+
+                    # ----- Consistency: 自分自身の予測誤差 -----
+                    # 各視点 i の「自分自身 i」の誤差を取得する。
+                    # 自分自身の損失は近傍数で割らず、独立して維持する。
+                    consistency_self = (
+                        consistency_raw * self_mask
+                    ).sum(dim=2)  # [N, B]
+
+                    consistency_self = consistency_self.mean(dim=0)  # [B]
+
+                    # ----- Consistency: 近傍他者の予測誤差 -----
+                    # 自分自身を除き、初期通信グラフの近傍だけを対象にする。
+                    other_neighbor_mask = neighbor_mask * (1.0 - self_mask)
+
+                    other_neighbor_count = (
+                        other_neighbor_mask.sum(dim=2)
+                        .clamp(min=1.0)
                     )  # [N, B]
-                    consistency_loss += (
-                        rho * consistency_masked.mean(dim=0)
+
+                    consistency_other = (
+                        (consistency_raw * other_neighbor_mask).sum(dim=2)
+                        / other_neighbor_count
+                    )  # [N, B]
+
+                    # 自分以外に近傍がいない場合は、
+                    # マスクの積がゼロなので損失もゼロになる。
+                    consistency_other = consistency_other.mean(dim=0)  # [B]
+
+                    neighbor_consistency_coef = float(
+                        getattr(
+                            self.cfg,
+                            "neighbor_consistency_coef",
+                            0.5,
+                        )
                     )
 
+                    consistency_loss += rho * (
+                        consistency_self
+                        + neighbor_consistency_coef * consistency_other
+                    )
+
+                    # ----- Reward prediction loss -----
                     reward_target_views = (
                         reward[t].unsqueeze(0).expand(N, -1, -1)
-                    )
+                    )  # [N, B, N]
+
                     reward_raw = h.mse(
                         reward_pred_views,
                         reward_target_views,
                         reduce=False,
                     )  # [N, B, N]
 
-                    reward_masked = (
-                        (reward_raw * neighbor_mask).sum(dim=2)
-                        / neighbor_count
+                    reward_type = getattr(
+                        self.cfg,
+                        "reward_type",
+                        "individual",
                     )
-                    reward_loss += rho * reward_masked.mean(dim=0)
+
+                    if reward_type == "individual":
+                        # 個別報酬の場合は、各視点 i から見た
+                        # エージェント i 自身の報酬予測だけを学習する。
+                        reward_self = (
+                            reward_raw * self_mask
+                        ).sum(dim=2)  # [N, B]
+
+                        # 各サンプルについて、エージェント間で平均する。
+                        reward_loss += rho * reward_self.mean(dim=0)  # [B]
+
+                    else:
+                        # 全体報酬の場合は従来どおり、
+                        # 各視点の近傍内にある報酬予測誤差を平均する。
+                        reward_masked = (
+                            (reward_raw * neighbor_mask).sum(dim=2)
+                            / neighbor_count
+                        )  # [N, B]
+
+                        reward_loss += rho * reward_masked.mean(dim=0)  # [B]
 
                     # ---------- critic の損失 ----------
                     value_loss += rho * (

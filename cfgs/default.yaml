@@ -59,6 +59,7 @@ rho: 0.5 # Temporal decay factor
 
 # Loss Coefs
 consistency_coef: 2.0
+neighbor_consistency_coef: 0.5 # Consistency loss 内の近傍他者分の重み
 reward_coef: 0.5
 value_coef: 0.1
 
