@@ -231,270 +231,467 @@ class AsynchMATDMPC:
         return final_actions
 
     def update(self, replay_buffer, step):
-        """バッファからサンプルしてモデルを更新 (全体/局所通信の最適化分岐を導入)"""
+        """価値・方策は実観測 latent、モデル損失は予測 latent で学習する。"""
         beta = h.linear_schedule(self.cfg.per_beta, step)
-        # 拡張されたバッファから絶対座標 (positions) も受け取る
-        obs, next_obses, action, reward, positions, idxs, weights = replay_buffer.sample(beta)
+        obs, next_obses, action, reward, positions, idxs, weights = (
+            replay_buffer.sample(beta)
+        )
 
         self.optim.zero_grad(set_to_none=True)
         self.std = h.linear_schedule(self.cfg.std_schedule, step)
         self.model.train()
 
-        N, B = self.N, self.cfg.batch_size
+        N = self.N
+        B = obs.shape[0]
+        H = self.cfg.horizon
+        agent_idx = torch.arange(N, device=self.device)
 
-        # ホライズン初期ステップ(t=0)の位置から通信マスクを生成
-        # positions: [H+1, B, N, 2] -> positions[0]: [B, N, 2]
+        # 実観測の価値計算には、対応する時刻の通信グラフを使用する。
+        # value_adj[t]:      時刻 t の Q / actor 用
+        # value_adj[t + 1]:  時刻 t + 1 の TD target 用
         with torch.no_grad():
-            adj_mask_global = self._make_adj_mask(positions[0])  # [B, N, N] または None
+            value_adj = [
+                self._make_adj_mask(positions[t])
+                for t in range(H + 1)
+            ]
 
-        with torch.autocast(device_type=self.device.type, dtype=torch.bfloat16):
-            e_global = self.model.encode(obs)  # [B, N, latent]
-            es_global = [e_global.detach()]
+            # 世界モデルの予測経路は従来どおり初期グラフで固定する。
+            rollout_adj = value_adj[0]
 
-            consistency_loss, reward_loss, value_loss, priority_loss = 0, 0, 0, 0
+            value_view_adj = [
+                self._make_view_masks(mask) if mask is not None else None
+                for mask in value_adj
+            ]
+            rollout_view_adj = value_view_adj[0]
 
-            # ────────────────────────────────────────────────────────
-            # パターンA：全体通信ルート (comm_range == inf のとき一括高速処理)
-            # ────────────────────────────────────────────────────────
-            if adj_mask_global is None:
-                e = e_global
-                for t in range(self.cfg.horizon):
-                    z = self.model.communicate(e, action[t], adj_mask=None)
-                    q1, q2 = self.model.Q(z, action[t])
-                    q_joint1, q_joint2 = self.model.Q_joint(q1, q2, e)
-                    
-                    e, reward_pred = self.model.next(z, action[t])
-                    
-                    with torch.no_grad():
-                        next_obs = next_obses[t]
-                        next_e = self.model_target.encode(next_obs)
-                        next_a = self.model.pi(self.model.communicate(next_e, action[t+1], adj_mask=None), self.cfg.min_std)
-                        next_z = self.model_target.communicate(next_e, next_a, adj_mask=None)
-                        nq1, nq2 = self.model_target.Q(next_z, next_a)
-                        nq_joint1, nq_joint2 = self.model_target.Q_joint(nq1, nq2, next_e)
-                        nq_joint = torch.min(nq_joint1, nq_joint2)
-                        
-                        joint_reward = (
-                            reward[t][:, :1]
-                            if getattr(self.cfg, "reward_type", "individual") == "global"
-                            else reward[t].sum(dim=1, keepdim=True)
-                        )
-                        td_target = joint_reward + self.cfg.discount * nq_joint
-                        
-                    es_global.append(e.detach())
+        with torch.autocast(
+            device_type=self.device.type,
+            dtype=torch.bfloat16,
+        ):
+            e0 = self.model.encode(obs)
 
-                    rho = (self.cfg.rho ** t)
-                    consistency_loss += rho * h.mse(e, next_e, reduce=False).mean(dim=(1,2)) 
-                    reward_loss += rho * h.mse(reward_pred, reward[t], reduce=False).mean(dim=1)
-                    value_loss += rho * (
-                        h.mse(q_joint1.float(), td_target.float(), reduce=False)
-                        + h.mse(q_joint2.float(), td_target.float(), reduce=False)
-                    ).squeeze(-1)
-                    priority_loss += rho * (h.l1(q_joint1, td_target, reduce=False) + h.l1(q_joint2, td_target, reduce=False)).squeeze(-1)
+            # actor 更新では、critic 更新前に計算した実観測 latent を
+            # detach して使用する。これまでの es_* と同じ扱い。
+            actor_states = []
 
-            # ────────────────────────────────────────────────────────
-            # パターンB：局所通信ルート (エージェント個別視点に展開してマスク処理)
-            # ────────────────────────────────────────────────────────
-            else:
-                adj_mask_per_agent = self._make_view_masks(adj_mask_global)
-                e_per_agent = e_global.unsqueeze(0).expand(N, -1, -1, -1).contiguous()  # [N, B, N, latent]
+            consistency_loss = 0
+            reward_loss = 0
+            value_loss = 0
+            priority_loss = 0
 
-                # pi_lossで使う、各時刻の「視点別予測状態」
-                es_per_agent = []
+            # ============================================================
+            # 全体通信
+            # ============================================================
+            if rollout_adj is None:
+                e_roll = e0
 
-                for t in range(self.cfg.horizon):
-                    es_per_agent.append(e_per_agent.detach())
-                    # 各エージェント独立通信: [N, B, N, latent]
-                    z_per_agent = self.model.communicate_per_agent(
-                        e_per_agent, action[t], adj_mask_per_agent=adj_mask_per_agent
-                    )
-                    # 自己予測分の抽出: [B, N, latent]
-                    z_self = torch.stack([z_per_agent[i, :, i, :] for i in range(N)], dim=1)
-
-                    # CTDE: MixingNetwork はグローバルな情報を集約
-                    q1, q2 = self.model.Q(z_self, action[t])
-
-                    # CTDE: 各時刻の実観測をエンコードした状態をQMIXに渡す
+                for t in range(H):
+                    # ---------- 実観測経路：critic ----------
                     current_obs = obs if t == 0 else next_obses[t - 1]
-                    e_qmix_state = self.model.encode(current_obs)
+                    e_real = e0 if t == 0 else self.model.encode(current_obs)
+                    actor_states.append(e_real.detach())
 
-                    q1, q2 = self.model.Q(z_self, action[t])
+                    z_real = self.model.communicate(
+                        e_real,
+                        action[t],
+                        adj_mask=None,
+                    )
+                    q1, q2 = self.model.Q(z_real, action[t])
                     q_joint1, q_joint2 = self.model.Q_joint(
-                        q1, q2, e_qmix_state
+                        q1, q2, e_real
                     )
 
-                    # 遷移予測 (N*B バッチにフラット化して計算)
-                    a_flat = action[t].unsqueeze(0).expand(N, -1, -1, -1).reshape(N * B, N, -1)
-                    z_flat = z_per_agent.reshape(N * B, N, -1)
-                    next_e_flat, reward_pred_flat = self.model.next(z_flat, a_flat)
+                    # ---------- 予測経路：世界モデル ----------
+                    z_roll = self.model.communicate(
+                        e_roll,
+                        action[t],
+                        adj_mask=None,
+                    )
+                    e_roll, reward_pred = self.model.next(
+                        z_roll, action[t]
+                    )
 
-                    next_e_per_agent = next_e_flat.reshape(N, B, N, -1)
-                    reward_pred_per_agent = reward_pred_flat.reshape(N, B, N)
-
-                    # ターゲット計算
+                    # ---------- 実観測経路：TD target ----------
                     with torch.no_grad():
-                        next_obs = next_obses[t]
-                        next_e_global_tgt = self.model_target.encode(next_obs)
-                        next_e_per_agent_tgt = next_e_global_tgt.unsqueeze(0).expand(N, -1, -1, -1).contiguous()
-
-                        next_z_per_agent_tgt = self.model_target.communicate_per_agent(
-                            next_e_per_agent_tgt, action[t + 1], adj_mask_per_agent=adj_mask_per_agent
+                        next_e_target = self.model_target.encode(
+                            next_obses[t]
                         )
-                        next_z_self_tgt = torch.stack([next_z_per_agent_tgt[i, :, i, :] for i in range(N)], dim=1)
-                        next_a_pi = self.model.pi(next_z_self_tgt, self.cfg.min_std)
 
-                        next_z_self_for_q = self.model_target.communicate_per_agent(
-                            next_e_per_agent_tgt, next_a_pi, adj_mask_per_agent=adj_mask_per_agent
+                        next_z_for_pi = self.model.communicate(
+                            next_e_target,
+                            action[t + 1],
+                            adj_mask=None,
                         )
-                        next_z_self_q = torch.stack([next_z_self_for_q[i, :, i, :] for i in range(N)], dim=1)
+                        next_a = self.model.pi(
+                            next_z_for_pi,
+                            self.cfg.min_std,
+                        )
 
-                        nq1, nq2 = self.model_target.Q(next_z_self_q, next_a_pi)
-                        nq_joint1, nq_joint2 = self.model_target.Q_joint(nq1, nq2, next_e_global_tgt)
+                        next_z_for_q = self.model_target.communicate(
+                            next_e_target,
+                            next_a,
+                            adj_mask=None,
+                        )
+                        nq1, nq2 = self.model_target.Q(
+                            next_z_for_q, next_a
+                        )
+                        nq_joint1, nq_joint2 = self.model_target.Q_joint(
+                            nq1, nq2, next_e_target
+                        )
                         nq_joint = torch.min(nq_joint1, nq_joint2)
 
                         joint_reward = (
                             reward[t][:, :1]
-                            if getattr(self.cfg, "reward_type", "individual") == "global"
+                            if getattr(
+                                self.cfg, "reward_type", "individual"
+                            ) == "global"
                             else reward[t].sum(dim=1, keepdim=True)
                         )
-                        td_target = joint_reward + self.cfg.discount * nq_joint
+                        td_target = (
+                            joint_reward
+                            + self.cfg.discount * nq_joint
+                        )
 
-                
-
-                    # 個別状態の更新
-                    e_per_agent = next_e_per_agent
-
-                    # ── 局所通信マスクを考慮した損失計算 ──
                     rho = self.cfg.rho ** t
-                    neighbor_mask = adj_mask_global.permute(1, 0, 2).float()  # [N, B, N]
-                    neighbor_count = neighbor_mask.sum(dim=2, keepdim=True).clamp(min=1.0)
 
-                    # Consistency Loss
-                    consistency_raw_per = h.mse(next_e_per_agent, next_e_global_tgt.unsqueeze(0).expand(N, -1, -1, -1), reduce=False).mean(dim=-1)
-                    c_masked = (consistency_raw_per * neighbor_mask).sum(dim=2) / neighbor_count.squeeze(-1)
-                    consistency_loss += rho * c_masked.mean(dim=0)
+                    consistency_loss += rho * h.mse(
+                        e_roll,
+                        next_e_target,
+                        reduce=False,
+                    ).mean(dim=(1, 2))
 
-                    # Reward Loss
-                    reward_target = reward[t].unsqueeze(0).expand(N, -1, -1)
-                    reward_raw_per = h.mse(reward_pred_per_agent, reward_target, reduce=False)
-                    r_masked = (reward_raw_per * neighbor_mask).sum(dim=2) / neighbor_count.squeeze(-1)
-                    reward_loss += rho * r_masked.mean(dim=0)
+                    reward_loss += rho * h.mse(
+                        reward_pred,
+                        reward[t],
+                        reduce=False,
+                    ).mean(dim=1)
 
-                    # Value / Priority Loss
                     value_loss += rho * (
-                        h.mse(q_joint1.float(), td_target.float(), reduce=False)
-                        + h.mse(q_joint2.float(), td_target.float(), reduce=False)
+                        h.mse(
+                            q_joint1.float(),
+                            td_target.float(),
+                            reduce=False,
+                        )
+                        + h.mse(
+                            q_joint2.float(),
+                            td_target.float(),
+                            reduce=False,
+                        )
                     ).squeeze(-1)
-                    priority_loss += rho * (h.l1(q_joint1, td_target, reduce=False) + h.l1(q_joint2, td_target, reduce=False)).squeeze(-1)
 
-            # ────────────────────────────────────────────────────────
-            # 共通の最適化処理
-            # ────────────────────────────────────────────────────────
+                    priority_loss += rho * (
+                        h.l1(q_joint1, td_target, reduce=False)
+                        + h.l1(q_joint2, td_target, reduce=False)
+                    ).squeeze(-1)
+
+            # ============================================================
+            # 局所通信
+            # ============================================================
+            else:
+                # 予測経路。各エージェント視点の rollout を維持する。
+                e_roll_views = (
+                    e0.unsqueeze(0)
+                    .expand(N, -1, -1, -1)
+                    .contiguous()
+                )
+
+                # 世界モデルの損失のマスクも従来どおり初期グラフ。
+                neighbor_mask = rollout_adj.permute(
+                    1, 0, 2
+                ).float()  # [N, B, N]
+                neighbor_count = (
+                    neighbor_mask.sum(dim=2)
+                    .clamp(min=1.0)
+                )  # [N, B]
+
+                for t in range(H):
+                    # ---------- 実観測経路：critic ----------
+                    current_obs = obs if t == 0 else next_obses[t - 1]
+                    e_real = e0 if t == 0 else self.model.encode(current_obs)
+
+                    e_real_views = (
+                        e_real.unsqueeze(0)
+                        .expand(N, -1, -1, -1)
+                        .contiguous()
+                    )  # [N, B, N, latent]
+
+                    # actor も同じ時刻の実観測・通信グラフを使用する。
+                    actor_states.append(e_real_views.detach())
+
+                    z_real_views = self.model.communicate_per_agent(
+                        e_real_views,
+                        action[t],
+                        adj_mask_per_agent=value_view_adj[t],
+                    )
+
+                    z_real_self = z_real_views[
+                        agent_idx, :, agent_idx, :
+                    ].permute(1, 0, 2)  # [B, N, latent]
+
+                    q1, q2 = self.model.Q(
+                        z_real_self,
+                        action[t],
+                    )
+                    q_joint1, q_joint2 = self.model.Q_joint(
+                        q1, q2, e_real
+                    )
+
+                    # ---------- 予測経路：世界モデル ----------
+                    z_roll_views = self.model.communicate_per_agent(
+                        e_roll_views,
+                        action[t],
+                        adj_mask_per_agent=rollout_view_adj,
+                    )
+
+                    z_roll_flat = z_roll_views.reshape(
+                        N * B, N, -1
+                    )
+                    a_roll_flat = (
+                        action[t]
+                        .unsqueeze(0)
+                        .expand(N, -1, -1, -1)
+                        .reshape(N * B, N, -1)
+                    )
+
+                    next_e_flat, reward_pred_flat = self.model.next(
+                        z_roll_flat,
+                        a_roll_flat,
+                    )
+                    next_e_roll_views = next_e_flat.reshape(
+                        N, B, N, -1
+                    )
+                    reward_pred_views = reward_pred_flat.reshape(
+                        N, B, N
+                    )
+
+                    # ---------- 実観測経路：TD target ----------
+                    with torch.no_grad():
+                        next_e_target = self.model_target.encode(
+                            next_obses[t]
+                        )
+                        next_e_target_views = (
+                            next_e_target.unsqueeze(0)
+                            .expand(N, -1, -1, -1)
+                            .contiguous()
+                        )
+
+                        next_z_for_pi_views = (
+                            self.model_target.communicate_per_agent(
+                                next_e_target_views,
+                                action[t + 1],
+                                adj_mask_per_agent=value_view_adj[t + 1],
+                            )
+                        )
+                        next_z_for_pi_self = next_z_for_pi_views[
+                            agent_idx, :, agent_idx, :
+                        ].permute(1, 0, 2)
+
+                        next_a = self.model.pi(
+                            next_z_for_pi_self,
+                            self.cfg.min_std,
+                        )
+
+                        next_z_for_q_views = (
+                            self.model_target.communicate_per_agent(
+                                next_e_target_views,
+                                next_a,
+                                adj_mask_per_agent=value_view_adj[t + 1],
+                            )
+                        )
+                        next_z_for_q_self = next_z_for_q_views[
+                            agent_idx, :, agent_idx, :
+                        ].permute(1, 0, 2)
+
+                        nq1, nq2 = self.model_target.Q(
+                            next_z_for_q_self, next_a
+                        )
+                        nq_joint1, nq_joint2 = self.model_target.Q_joint(
+                            nq1, nq2, next_e_target
+                        )
+                        nq_joint = torch.min(nq_joint1, nq_joint2)
+
+                        joint_reward = (
+                            reward[t][:, :1]
+                            if getattr(
+                                self.cfg, "reward_type", "individual"
+                            ) == "global"
+                            else reward[t].sum(dim=1, keepdim=True)
+                        )
+                        td_target = (
+                            joint_reward
+                            + self.cfg.discount * nq_joint
+                        )
+
+                    # 次の世界モデル予測へ進む。
+                    e_roll_views = next_e_roll_views
+                    rho = self.cfg.rho ** t
+
+                    # ---------- 世界モデルの損失 ----------
+                    consistency_raw = h.mse(
+                        next_e_roll_views,
+                        next_e_target.unsqueeze(0).expand(
+                            N, -1, -1, -1
+                        ),
+                        reduce=False,
+                    ).mean(dim=-1)  # [N, B, N]
+
+                    consistency_masked = (
+                        (consistency_raw * neighbor_mask).sum(dim=2)
+                        / neighbor_count
+                    )  # [N, B]
+                    consistency_loss += (
+                        rho * consistency_masked.mean(dim=0)
+                    )
+
+                    reward_target_views = (
+                        reward[t].unsqueeze(0).expand(N, -1, -1)
+                    )
+                    reward_raw = h.mse(
+                        reward_pred_views,
+                        reward_target_views,
+                        reduce=False,
+                    )  # [N, B, N]
+
+                    reward_masked = (
+                        (reward_raw * neighbor_mask).sum(dim=2)
+                        / neighbor_count
+                    )
+                    reward_loss += rho * reward_masked.mean(dim=0)
+
+                    # ---------- critic の損失 ----------
+                    value_loss += rho * (
+                        h.mse(
+                            q_joint1.float(),
+                            td_target.float(),
+                            reduce=False,
+                        )
+                        + h.mse(
+                            q_joint2.float(),
+                            td_target.float(),
+                            reduce=False,
+                        )
+                    ).squeeze(-1)
+
+                    priority_loss += rho * (
+                        h.l1(q_joint1, td_target, reduce=False)
+                        + h.l1(q_joint2, td_target, reduce=False)
+                    ).squeeze(-1)
+
             total_loss = (
-                self.cfg.consistency_coef * consistency_loss +
-                self.cfg.reward_coef      * reward_loss +
-                self.cfg.value_coef       * value_loss
+                self.cfg.consistency_coef * consistency_loss
+                + self.cfg.reward_coef * reward_loss
+                + self.cfg.value_coef * value_loss
             )
 
             weighted_loss = (total_loss * weights).mean()
-            weighted_loss.register_hook(lambda grad: grad * (1 / self.cfg.horizon))
+            weighted_loss.register_hook(
+                lambda grad: grad * (1 / H)
+            )
 
         weighted_loss.backward()
-        torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.cfg.grad_clip_norm)
+        torch.nn.utils.clip_grad_norm_(
+            self.model.parameters(),
+            self.cfg.grad_clip_norm,
+        )
         self.optim.step()
 
         p_loss = priority_loss.clamp(max=1e4).float().detach()
         safe_p_loss = torch.nan_to_num(p_loss, nan=1.0)
         replay_buffer.update_priorities(idxs, safe_p_loss)
 
-        # ── Policy の更新 (訓練時はCTDEの特権により全体通信のマスクを使用可能) ──
-        self.pi_optim.zero_grad()
+        # ================================================================
+        # Actor 更新：実観測 latent と、その時刻の通信グラフを使用
+        # ================================================================
+        self.pi_optim.zero_grad(set_to_none=True)
         self.model.track_q_grad(False)
 
-        with torch.autocast(device_type=self.device.type, dtype=torch.bfloat16):
-            pi_loss = 0
+        try:
+            with torch.autocast(
+                device_type=self.device.type,
+                dtype=torch.bfloat16,
+            ):
+                pi_loss = 0
 
-            for t in range(self.cfg.horizon):
-                if adj_mask_global is None:
-                    # 全体通信ルート：従来の処理を維持
-                    e_t = es_global[t]
+                for t in range(H):
+                    if rollout_adj is None:
+                        e_real = actor_states[t]
 
-                    z_pre = self.model.communicate(
-                        e_t,
-                        action[t],
-                        adj_mask=None,
+                        z_pre = self.model.communicate(
+                            e_real,
+                            action[t],
+                            adj_mask=None,
+                        )
+                        a_t = self.model.pi(z_pre, 0)
+
+                        z_eval = self.model.communicate(
+                            e_real,
+                            a_t,
+                            adj_mask=None,
+                        )
+                        q1, q2 = self.model.Q(z_eval, a_t)
+
+                    else:
+                        e_real_views = actor_states[t]
+                        mask_t = value_view_adj[t]
+
+                        z_pre_views = (
+                            self.model.communicate_per_agent(
+                                e_real_views,
+                                action[t],
+                                adj_mask_per_agent=mask_t,
+                            )
+                        )
+                        z_pre_self = z_pre_views[
+                            agent_idx, :, agent_idx, :
+                        ]  # [N, B, latent]
+
+                        a_self = self.model.pi(z_pre_self, 0)
+                        a_t = a_self.permute(1, 0, 2)
+
+                        z_eval_views = (
+                            self.model.communicate_per_agent(
+                                e_real_views,
+                                a_t,
+                                adj_mask_per_agent=mask_t,
+                            )
+                        )
+                        z_eval_self = z_eval_views[
+                            agent_idx, :, agent_idx, :
+                        ].permute(1, 0, 2)
+
+                        q1, q2 = self.model.Q(
+                            z_eval_self, a_t
+                        )
+
+                    pi_loss += (
+                        -torch.min(q1, q2).mean()
+                        * (self.cfg.rho ** t)
                     )
-                    a_t = self.model.pi(z_pre, 0)
 
-                    z_eval = self.model.communicate(
-                        e_t,
-                        a_t,
-                        adj_mask=None,
-                    )
-                    q1, q2 = self.model.Q(z_eval, a_t)
+            pi_loss.backward()
+            torch.nn.utils.clip_grad_norm_(
+                self.model._pi.parameters(),
+                self.cfg.grad_clip_norm,
+            )
+            self.pi_optim.step()
 
-                else:
-                    # 局所通信ルート：価値損失と同じ視点別状態を使用
-                    e_views = es_per_agent[t]  # [N, B, N, latent]
-
-                    agent_idx = torch.arange(N, device=self.device)
-
-                    # まず、リプレイ行動を仮行動として通信し、
-                    # エージェントi視点の表現を得る
-                    z_pre_views = self.model.communicate_per_agent(
-                        e_views,
-                        action[t],
-                        adj_mask_per_agent=adj_mask_per_agent,
-                    )  # [N, B, N, latent]
-
-                    # 各視点iの「エージェントi自身」の表現だけを取り出す
-                    z_pre_self = z_pre_views[
-                        agent_idx, :, agent_idx, :
-                    ]  # [N, B, latent]
-
-                    # 各エージェントが、自分の視点の情報から行動を出す
-                    a_self = self.model.pi(
-                        z_pre_self,
-                        0,
-                    )  # [N, B, action_dim]
-
-                    # [N, B, action_dim] -> [B, N, action_dim]
-                    a_t = a_self.permute(1, 0, 2)
-
-                    # 得られた方策行動で再び通信し、Qを評価
-                    z_eval_views = self.model.communicate_per_agent(
-                        e_views,
-                        a_t,
-                        adj_mask_per_agent=adj_mask_per_agent,
-                    )  # [N, B, N, latent]
-
-                    z_eval_self = z_eval_views[
-                        agent_idx, :, agent_idx, :
-                    ].permute(1, 0, 2)  # [B, N, latent]
-
-                    q1, q2 = self.model.Q(z_eval_self, a_t)
-
-                pi_loss += (
-                    -torch.min(q1, q2).mean()
-                    * (self.cfg.rho ** t)
-                )
-        
-        pi_loss.backward()
-        torch.nn.utils.clip_grad_norm_(self.model._pi.parameters(), self.cfg.grad_clip_norm)
-        self.pi_optim.step()
-
-        self.model.track_q_grad(True)
+        finally:
+            self.model.track_q_grad(True)
 
         if step % self.cfg.update_freq == 0:
-            h.ema(self.model, self.model_target, self.cfg.tau)
+            h.ema(
+                self.model,
+                self.model_target,
+                self.cfg.tau,
+            )
 
         self.model.eval()
         return {
-            'total_loss':       total_loss.mean().detach(),
-            'consistency_loss': consistency_loss.mean().detach(),
-            'reward_loss':      reward_loss.mean().detach(),
-            'value_loss':       value_loss.mean().detach(),
-            'pi_loss':          pi_loss.detach()
+            "total_loss": total_loss.mean().detach(),
+            "consistency_loss": consistency_loss.mean().detach(),
+            "reward_loss": reward_loss.mean().detach(),
+            "value_loss": value_loss.mean().detach(),
+            "pi_loss": pi_loss.detach(),
         }
 
     def save(self, filepath):
