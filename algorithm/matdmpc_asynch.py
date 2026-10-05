@@ -1,7 +1,7 @@
-# algorithm/tdmpc_asynch.py
+from copy import deepcopy
+
 import numpy as np
 import torch
-from copy import deepcopy
 
 import algorithm.helper as h
 from algorithm.models import MACLM
@@ -13,9 +13,9 @@ class AsynchMATDMPC:
         self.device = torch.device(cfg.device)
         self.std = h.linear_schedule(cfg.std_schedule, 0)
         self.comm_range = float(getattr(cfg, "comm_range", "inf"))
+        self.diagnostics = None
 
-        # value_coef は既存設定との互換性のためだけに読み取る。
-        # 新しい設定では joint_value_coef を使用する。
+        # value_coef は既存設定との互換性のために使用する。
         self.joint_value_coef = float(
             getattr(
                 cfg,
@@ -49,7 +49,6 @@ class AsynchMATDMPC:
         self.model_target.eval()
         self.N = cfg.num_agents
 
-        # 暫定行動系列のトラッキング [N, horizon, action_dim]
         self._prev_mean = torch.zeros(
             self.N,
             self.cfg.horizon,
@@ -59,11 +58,8 @@ class AsynchMATDMPC:
 
     def _make_adj_mask(self, positions):
         """
-        positions: Tensor [..., N, 2]
-
-        Returns:
-            BoolTensor [..., N, N]。
-            全て通信可能な場合は None。
+        positions: [..., N, 2]
+        戻り値: [..., N, N] の bool テンソル。全体通信なら None。
         """
         if self.comm_range == float("inf") or positions is None:
             return None
@@ -88,7 +84,6 @@ class AsynchMATDMPC:
 
     @torch.no_grad()
     def estimate_value(self, e0, actions, horizon, adj_mask=None):
-        """マルチエージェントの将来軌道を評価する。"""
         G = torch.zeros(
             actions.size(1),
             self.N,
@@ -126,12 +121,11 @@ class AsynchMATDMPC:
 
     @torch.no_grad()
     def plan(self, obs, positions=None, eval_mode=False, step=None, t0=True):
-        """エージェントごとの非同期プランニング。"""
         obs_t = torch.tensor(
             obs,
             dtype=torch.float32,
             device=self.device,
-        ).unsqueeze(0)  # [1, N, obs_dim]
+        ).unsqueeze(0)
 
         horizon = int(
             min(
@@ -149,7 +143,6 @@ class AsynchMATDMPC:
 
         e0 = self.model.encode(obs_t)
 
-        # 絶対座標から初期通信グラフを生成する。ホライズン内は固定。
         adj_mask_1 = self._make_adj_mask(
             np.expand_dims(positions, axis=0)
             if positions is not None
@@ -184,7 +177,6 @@ class AsynchMATDMPC:
             dtype=torch.bfloat16,
         ):
             for _ in range(self.cfg.iterations):
-                # 1. ランダムサンプル
                 noise = torch.randn(
                     H,
                     N,
@@ -199,7 +191,6 @@ class AsynchMATDMPC:
                     1,
                 )
 
-                # 2. Policy サンプル
                 if num_pi_trajs > 0:
                     S = num_pi_trajs
                     a_pi = torch.empty(
@@ -214,7 +205,7 @@ class AsynchMATDMPC:
                         e0.unsqueeze(0)
                         .expand(N, S, N, -1)
                         .clone()
-                    )  # [N, S, N, latent]
+                    )
 
                     if adj_mask_1 is not None:
                         view_masks_pi = (
@@ -276,7 +267,6 @@ class AsynchMATDMPC:
                 else:
                     actions_all = a_random
 
-                # 3. 自己中心的な joint actions の構築
                 joint_base = (
                     self._prev_mean[:, :H]
                     .permute(1, 0, 2)
@@ -296,7 +286,6 @@ class AsynchMATDMPC:
                     agent_idx_t, :, :, agent_idx_t, :
                 ] = actions_all.permute(1, 0, 2, 3)
 
-                # 4. 一括評価用展開
                 e_all = e0.repeat(N * B, 1, 1)
                 joint_flat = (
                     joint_all
@@ -330,7 +319,6 @@ class AsynchMATDMPC:
                     dim=0,
                 )
 
-                # 5. CEM 更新
                 elite_idxs = torch.topk(
                     values,
                     self.cfg.num_elites,
@@ -405,7 +393,7 @@ class AsynchMATDMPC:
         return final_actions
 
     def update(self, replay_buffer, step):
-        """価値・方策は実観測 latent、モデル損失は予測 latent で学習する。"""
+        """価値・方策は実観測 latent、モデル損失は予測 latent で学習。"""
         beta = h.linear_schedule(self.cfg.per_beta, step)
         obs, next_obses, action, reward, positions, idxs, weights = (
             replay_buffer.sample(beta)
@@ -424,12 +412,9 @@ class AsynchMATDMPC:
         agent_idx = torch.arange(N, device=self.device)
 
         train_joint_value = self.joint_value_coef != 0.0
-        train_individual_value = (
-            self.individual_value_coef != 0.0
-        )
+        train_individual_value = self.individual_value_coef != 0.0
+        log_values = self.diagnostics is not None
 
-        # 実観測の価値計算には、各時刻の通信グラフを使用する。
-        # 世界モデルの予測経路は初期グラフで固定する。
         with torch.no_grad():
             value_adj = [
                 self._make_adj_mask(positions[t])
@@ -445,7 +430,6 @@ class AsynchMATDMPC:
             ]
             rollout_view_adj = value_view_adj[0]
 
-        # 個別 Q の TD 損失は、局所通信かつ個別報酬の場合に使う。
         if (
             rollout_adj is not None
             and train_individual_value
@@ -465,9 +449,6 @@ class AsynchMATDMPC:
             dtype=torch.bfloat16,
         ):
             e0 = self.model.encode(obs)
-
-            # Actor 更新では、critic 更新前に計算した実観測 latent
-            # を detach して使用する。
             actor_states = []
 
             consistency_loss = torch.zeros(
@@ -510,9 +491,8 @@ class AsynchMATDMPC:
                     )
                     actor_states.append(e_real.detach())
 
-                    # 共同価値を学習しない場合、critic 用の
-                    # communicate / Q / Q_joint は計算しない。
-                    if train_joint_value:
+                    # ログだけが必要な場合も Q を計算する。
+                    if train_joint_value or log_values:
                         z_real = self.model.communicate(
                             e_real,
                             action[t],
@@ -522,15 +502,16 @@ class AsynchMATDMPC:
                             z_real,
                             action[t],
                         )
-                        q_joint1, q_joint2 = (
-                            self.model.Q_joint(
-                                q1,
-                                q2,
-                                e_real,
-                            )
-                        )
 
-                    # ---------- 予測経路：世界モデル ----------
+                        if train_joint_value:
+                            q_joint1, q_joint2 = (
+                                self.model.Q_joint(
+                                    q1,
+                                    q2,
+                                    e_real,
+                                )
+                            )
+
                     z_roll = self.model.communicate(
                         e_roll,
                         action[t],
@@ -541,8 +522,6 @@ class AsynchMATDMPC:
                         action[t],
                     )
 
-                    # 世界モデルの consistency target は、
-                    # 価値の係数によらず必要。
                     with torch.no_grad():
                         next_e_target = (
                             self.model_target.encode(
@@ -550,7 +529,7 @@ class AsynchMATDMPC:
                             )
                         )
 
-                        if train_joint_value:
+                        if train_joint_value or log_values:
                             next_z_for_pi = (
                                 self.model.communicate(
                                     next_e_target,
@@ -574,35 +553,69 @@ class AsynchMATDMPC:
                                 next_z_for_q,
                                 next_a,
                             )
-                            nq_joint1, nq_joint2 = (
-                                self.model_target.Q_joint(
-                                    nq1,
-                                    nq2,
-                                    next_e_target,
-                                )
-                            )
-                            nq_joint = torch.min(
-                                nq_joint1,
-                                nq_joint2,
-                            )
 
-                            joint_reward = (
-                                reward[t][:, :1]
-                                if getattr(
-                                    self.cfg,
-                                    "reward_type",
-                                    "individual",
-                                ) == "global"
-                                else reward[t].sum(
-                                    dim=1,
-                                    keepdim=True,
+                            # 損失係数と独立に、個別 Q の
+                            # 1-step TD target を診断用に作る。
+                            if log_values:
+                                individual_td_target = (
+                                    reward[t]
+                                    + self.cfg.discount
+                                    * torch.min(nq1, nq2)
                                 )
-                            )
-                            joint_td_target = (
-                                joint_reward
-                                + self.cfg.discount
-                                * nq_joint
-                            )
+
+                            if train_joint_value:
+                                nq_joint1, nq_joint2 = (
+                                    self.model_target.Q_joint(
+                                        nq1,
+                                        nq2,
+                                        next_e_target,
+                                    )
+                                )
+                                nq_joint = torch.min(
+                                    nq_joint1,
+                                    nq_joint2,
+                                )
+
+                                joint_reward = (
+                                    reward[t][:, :1]
+                                    if getattr(
+                                        self.cfg,
+                                        "reward_type",
+                                        "individual",
+                                    ) == "global"
+                                    else reward[t].sum(
+                                        dim=1,
+                                        keepdim=True,
+                                    )
+                                )
+                                joint_td_target = (
+                                    joint_reward
+                                    + self.cfg.discount
+                                    * nq_joint
+                                )
+
+                    if log_values:
+                        self.diagnostics.values(
+                            t,
+                            q1=q1,
+                            q2=q2,
+                            individual_td_target=individual_td_target,
+                            q_joint1=(
+                                q_joint1
+                                if train_joint_value
+                                else None
+                            ),
+                            q_joint2=(
+                                q_joint2
+                                if train_joint_value
+                                else None
+                            ),
+                            joint_td_target=(
+                                joint_td_target
+                                if train_joint_value
+                                else None
+                            ),
+                        )
 
                     rho = self.cfg.rho ** t
 
@@ -649,29 +662,27 @@ class AsynchMATDMPC:
             # 局所通信
             # ============================================================
             else:
-                # 各エージェント視点の rollout を維持する。
                 e_roll_views = (
                     e0.unsqueeze(0)
                     .expand(N, -1, -1, -1)
                     .contiguous()
                 )
 
-                # 世界モデルの損失マスクは初期グラフで固定。
                 neighbor_mask = rollout_adj.permute(
                     1,
                     0,
                     2,
-                ).float()  # [N, B, N]
+                ).float()
                 neighbor_count = (
                     neighbor_mask.sum(dim=2)
                     .clamp(min=1.0)
-                )  # [N, B]
+                )
 
                 self_mask = torch.eye(
                     N,
                     dtype=neighbor_mask.dtype,
                     device=neighbor_mask.device,
-                ).unsqueeze(1)  # [N, 1, N]
+                ).unsqueeze(1)
 
                 other_neighbor_mask = (
                     neighbor_mask * (1.0 - self_mask)
@@ -709,17 +720,16 @@ class AsynchMATDMPC:
                         e_real.unsqueeze(0)
                         .expand(N, -1, -1, -1)
                         .contiguous()
-                    )  # [N, B, N, latent]
+                    )
 
                     actor_states.append(
                         e_real_views.detach()
                     )
 
-                    # 両方の価値係数が 0 なら、critic 用の
-                    # communicate / Q は計算しない。
                     if (
                         train_joint_value
                         or train_individual_value
+                        or log_values
                     ):
                         z_real_views = (
                             self.model.communicate_per_agent(
@@ -739,7 +749,6 @@ class AsynchMATDMPC:
                             action[t],
                         )
 
-                        # 共同価値を学習するときだけ計算する。
                         if train_joint_value:
                             q_joint1, q_joint2 = (
                                 self.model.Q_joint(
@@ -749,7 +758,6 @@ class AsynchMATDMPC:
                                 )
                             )
 
-                    # ---------- 予測経路：世界モデル ----------
                     z_roll_views = (
                         self.model.communicate_per_agent(
                             e_roll_views,
@@ -794,7 +802,6 @@ class AsynchMATDMPC:
                         )
                     )
 
-                    # ---------- 実観測経路：TD target ----------
                     with torch.no_grad():
                         next_e_target = (
                             self.model_target.encode(
@@ -805,6 +812,7 @@ class AsynchMATDMPC:
                         if (
                             train_joint_value
                             or train_individual_value
+                            or log_values
                         ):
                             next_e_target_views = (
                                 next_e_target
@@ -863,8 +871,7 @@ class AsynchMATDMPC:
                                 )
                             )
 
-                            if train_individual_value:
-                                # reward[t], nq1, nq2: [B, N]
+                            if train_individual_value or log_values:
                                 individual_td_target = (
                                     reward[t]
                                     + self.cfg.discount
@@ -873,8 +880,7 @@ class AsynchMATDMPC:
 
                             if train_joint_value:
                                 nq_joint1, nq_joint2 = (
-                                    self.model_target
-                                    .Q_joint(
+                                    self.model_target.Q_joint(
                                         nq1,
                                         nq2,
                                         next_e_target,
@@ -899,22 +905,43 @@ class AsynchMATDMPC:
                                     * nq_joint
                                 )
 
+                    if log_values:
+                        self.diagnostics.values(
+                            t,
+                            q1=q1,
+                            q2=q2,
+                            individual_td_target=individual_td_target,
+                            q_joint1=(
+                                q_joint1
+                                if train_joint_value
+                                else None
+                            ),
+                            q_joint2=(
+                                q_joint2
+                                if train_joint_value
+                                else None
+                            ),
+                            joint_td_target=(
+                                joint_td_target
+                                if train_joint_value
+                                else None
+                            ),
+                        )
+
                     e_roll_views = next_e_roll_views
                     rho = self.cfg.rho ** t
 
-                    # ---------- 世界モデルの損失 ----------
-                    # 軸: [視点エージェント, サンプル, 予測対象]
                     consistency_raw = h.mse(
                         next_e_roll_views,
                         next_e_target
                         .unsqueeze(0)
                         .expand(N, -1, -1, -1),
                         reduce=False,
-                    ).mean(dim=-1)  # [N, B, N]
+                    ).mean(dim=-1)
 
                     consistency_self = (
                         consistency_raw * self_mask
-                    ).sum(dim=2).mean(dim=0)  # [B]
+                    ).sum(dim=2).mean(dim=0)
 
                     consistency_other = (
                         (
@@ -922,7 +949,7 @@ class AsynchMATDMPC:
                             * other_neighbor_mask
                         ).sum(dim=2)
                         / other_neighbor_count
-                    ).mean(dim=0)  # [B]
+                    ).mean(dim=0)
 
                     consistency_loss += rho * (
                         consistency_self
@@ -939,15 +966,14 @@ class AsynchMATDMPC:
                         reward_pred_views,
                         reward_target_views,
                         reduce=False,
-                    )  # [N, B, N]
+                    )
 
                     if reward_type == "individual":
                         reward_self = (
                             reward_raw * self_mask
-                        ).sum(dim=2)  # [N, B]
+                        ).sum(dim=2)
                         reward_loss += (
-                            rho
-                            * reward_self.mean(dim=0)
+                            rho * reward_self.mean(dim=0)
                         )
                     else:
                         reward_masked = (
@@ -956,13 +982,11 @@ class AsynchMATDMPC:
                                 * neighbor_mask
                             ).sum(dim=2)
                             / neighbor_count
-                        )  # [N, B]
+                        )
                         reward_loss += (
-                            rho
-                            * reward_masked.mean(dim=0)
+                            rho * reward_masked.mean(dim=0)
                         )
 
-                    # ---------- 共同価値の critic 損失 ----------
                     if train_joint_value:
                         joint_value_loss += rho * (
                             h.mse(
@@ -977,8 +1001,6 @@ class AsynchMATDMPC:
                             )
                         ).squeeze(-1)
 
-                        # 共同価値が有効なら、従来どおり
-                        # 共同価値の TD 誤差を PER に使用。
                         priority_loss += rho * (
                             h.l1(
                                 q_joint1,
@@ -992,7 +1014,6 @@ class AsynchMATDMPC:
                             )
                         ).squeeze(-1)
 
-                    # ---------- 個別価値の critic 損失 ----------
                     if train_individual_value:
                         individual_value_loss += rho * (
                             h.mse(
@@ -1005,10 +1026,8 @@ class AsynchMATDMPC:
                                 individual_td_target.float(),
                                 reduce=False,
                             )
-                        ).mean(dim=1)  # [B]
+                        ).mean(dim=1)
 
-                        # 共同価値を無効にした場合も、
-                        # PER の優先度を更新できるようにする。
                         if not train_joint_value:
                             priority_loss += rho * (
                                 h.l1(
@@ -1021,7 +1040,7 @@ class AsynchMATDMPC:
                                     individual_td_target,
                                     reduce=False,
                                 )
-                            ).mean(dim=1)  # [B]
+                            ).mean(dim=1)
 
             total_loss = (
                 self.cfg.consistency_coef
@@ -1042,14 +1061,21 @@ class AsynchMATDMPC:
             )
 
         weighted_loss.backward()
+
+        # クリッピングで隠れる前の勾配を記録。
+        if self.diagnostics is not None:
+            self.diagnostics.gradients(
+                "critic",
+                self.model,
+                self.optim,
+            )
+
         torch.nn.utils.clip_grad_norm_(
             self.model.parameters(),
             self.cfg.grad_clip_norm,
         )
         self.optim.step()
 
-        # 有効な価値損失がないときは、ゼロの TD 誤差で
-        # replay buffer の優先度を上書きしない。
         has_priority_signal = (
             train_joint_value
             or (
@@ -1073,9 +1099,6 @@ class AsynchMATDMPC:
                 safe_p_loss,
             )
 
-        # ================================================================
-        # Actor 更新：実観測 latent と各時刻の通信グラフを使用
-        # ================================================================
         self.pi_optim.zero_grad(set_to_none=True)
         self.model.track_q_grad(False)
 
@@ -1123,7 +1146,7 @@ class AsynchMATDMPC:
                             :,
                             agent_idx,
                             :,
-                        ]  # [N, B, latent]
+                        ]
 
                         a_self = self.model.pi(
                             z_pre_self,
@@ -1156,6 +1179,14 @@ class AsynchMATDMPC:
                     )
 
             pi_loss.backward()
+
+            if self.diagnostics is not None:
+                self.diagnostics.gradients(
+                    "actor",
+                    self.model,
+                    self.pi_optim,
+                )
+
             torch.nn.utils.clip_grad_norm_(
                 self.model._pi.parameters(),
                 self.cfg.grad_clip_norm,
@@ -1202,15 +1233,11 @@ class AsynchMATDMPC:
             filepath,
             map_location=self.device,
         )
-        self.model.load_state_dict(
-            checkpoint["model"]
-        )
+        self.model.load_state_dict(checkpoint["model"])
         self.model_target.load_state_dict(
             checkpoint["model_target"]
         )
-        self.optim.load_state_dict(
-            checkpoint["optim"]
-        )
+        self.optim.load_state_dict(checkpoint["optim"])
         self.pi_optim.load_state_dict(
             checkpoint["pi_optim"]
         )
@@ -1222,15 +1249,7 @@ class AsynchMATDMPC:
     def _make_view_masks(self, adj_mask_global):
         """
         adj_mask_global: [B, N, N]
-            [b, j, k] = j が k を直接参照できるか
-
         戻り値: [N, B, N, N]
-            [i, b, j, k] = i 視点の予測において、
-            j が k を参照できるか
-
-        i 視点では、i の近傍集合内にある j, k についてのみ
-        元の距離グラフの辺を維持する。
-        集合外のトークンは自分自身だけ参照可能にする。
         """
         if adj_mask_global is None:
             return None
@@ -1241,7 +1260,7 @@ class AsynchMATDMPC:
             1,
             0,
             2,
-        )  # [N, B, N]
+        )
 
         view_masks = (
             adj_mask_global.unsqueeze(0)
