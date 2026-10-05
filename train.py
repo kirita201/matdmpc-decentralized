@@ -174,19 +174,6 @@ def train():
     state_ckpt_path = ckpt_dir / "state_latest.pt"
     buffer_ckpt_path = ckpt_dir / "buffer_latest.pt"
 
-    # 同一 TensorBoard ディレクトリで purge_step を使えるよう、
-    # 全タグに共通の横軸を割り当てる。
-    #
-    # 各エピソード:
-    #   step * tb_stride       : Train/Loss
-    #   step * tb_stride + 1～ : 個々の更新の Grad/Weight
-    #
-    # 初回の seed_steps 回更新も収まる幅を確保する。
-    tb_stride = max(
-        int(cfg.seed_steps),
-        int(cfg.episode_length),
-    ) + 1
-
     writer = None
     diagnostics = None
 
@@ -229,7 +216,11 @@ def train():
                 f"Unknown algo_type: {algo_type}"
             )
 
+        # step は従来の学習・評価スケジュール用。
+        # experienced_steps は学習環境で実際に経験した
+        # env.step() の累計回数で、TensorBoard の横軸に使う。
         start_step = 0
+        experienced_steps = 0
         episode_idx = 0
         resumed = False
 
@@ -251,24 +242,23 @@ def train():
                     map_location="cpu",
                 )
 
-                saved_tb_stride = state.get("tb_stride")
-                if (
-                    saved_tb_stride is not None
-                    and int(saved_tb_stride) != tb_stride
-                ):
+                if "env_steps" not in state:
                     raise ValueError(
-                        "再開時の seed_steps または "
-                        "episode_length が保存時と異なり、"
-                        "TensorBoard のステップ幅が一致しません。"
+                        "チェックポイントに env_steps がありません。"
+                        "旧形式の TensorBoard ログは横軸が異なるため、"
+                        "そのまま再開して混在させることはできません。"
                     )
 
                 agent.load(model_ckpt_path)
 
-                # state["step"] は保存済みエピソードの step。
-                # 同じエピソードを再実行せず、次から始める。
+                # state["step"] は保存済みエピソードの
+                # スケジュール上の step。次のエピソードから再開する。
                 start_step = (
                     int(state["step"])
                     + int(cfg.episode_length)
+                )
+                experienced_steps = int(
+                    state["env_steps"]
                 )
                 episode_idx = int(
                     state["episode_idx"]
@@ -292,14 +282,12 @@ def train():
                         "Starting with an empty buffer."
                     )
 
-        # Writer は１つだけ。Grad/Weight もこの writer に書く。
-        #
-        # 再開時は、チェックポイントより後のエピソードに
-        # 書かれていたイベントを TensorBoard 上で隠す。
+        # 保存済みの experienced_steps までのイベントは残し、
+        # それより後に書かれたイベントだけを再開時に隠す。
         writer = SummaryWriter(
             log_dir=str(log_dir),
             purge_step=(
-                start_step * tb_stride
+                experienced_steps + 1
                 if resumed
                 else None
             ),
@@ -310,7 +298,7 @@ def train():
                 log_dir,
                 writer,
                 resume_env_step=(
-                    start_step
+                    experienced_steps
                     if resumed
                     else None
                 ),
@@ -328,8 +316,6 @@ def train():
             cfg.train_steps + cfg.episode_length,
             cfg.episode_length,
         ):
-            episode_tb_step = step * tb_stride
-
             decay_ratio = max(
                 0.0,
                 1.0 - (step / decay_steps),
@@ -384,6 +370,10 @@ def train():
                     done,
                     next_info,
                 ) = env.step(act_np)
+
+                # 評価環境のステップやモデル更新回数は含めない。
+                # 学習環境で経験を１ステップ得るたびに加算する。
+                experienced_steps += 1
 
                 if algo_type == "mappo":
                     pos_t = (
@@ -451,6 +441,9 @@ def train():
                     )
 
                 t += 1
+
+            # このエピソード終了時点までに経験したステップ数。
+            episode_tb_step = experienced_steps
 
             # --------------------------------------------------------
             # エピソード指標
@@ -545,7 +538,7 @@ def train():
                 loss_accum = {}
 
                 for i in update_iterator:
-                    # 従来どおり agent.update() に渡す step。
+                    # agent.update() に渡す値は従来どおり。
                     update_step = (
                         i
                         if step == cfg.seed_steps
@@ -559,11 +552,9 @@ def train():
                     if diagnostics is not None:
                         diagnostics.set_context(
                             update_index=update_step,
-                            env_step=step,
+                            env_step=experienced_steps,
                             tensorboard_step=(
-                                episode_tb_step
-                                + i
-                                + 1
+                                experienced_steps
                             ),
                         )
 
@@ -598,7 +589,7 @@ def train():
 
             if episode_idx % 5 == 0:
                 print(
-                    f"Step: {step}, "
+                    f"Env steps: {experienced_steps}, "
                     f"Episode: {episode_idx}, "
                     f"Reward: {ep_reward:.3f}"
                 )
@@ -621,8 +612,8 @@ def train():
                 torch.save(
                     {
                         "step": step,
+                        "env_steps": experienced_steps,
                         "episode_idx": episode_idx,
-                        "tb_stride": tb_stride,
                     },
                     state_ckpt_path,
                 )
@@ -635,7 +626,7 @@ def train():
                 print(
                     ">>> Checkpoints "
                     "(Model, State, Buffer) "
-                    f"saved at Step {step}"
+                    f"saved at Env steps {experienced_steps}"
                 )
 
             # --------------------------------------------------------
@@ -655,7 +646,8 @@ def train():
                     save_gif=True,
                 )
                 print(
-                    f">>> EVAL at Step {step}: "
+                    f">>> EVAL at Env steps "
+                    f"{experienced_steps}: "
                     f"Reward = {eval_reward:.3f}"
                 )
 
