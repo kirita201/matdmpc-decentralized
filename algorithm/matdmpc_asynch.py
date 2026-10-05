@@ -15,7 +15,6 @@ class AsynchMATDMPC:
         self.comm_range = float(getattr(cfg, "comm_range", "inf"))
         self.diagnostics = None
 
-        # value_coef は既存設定との互換性のために使用する。
         self.joint_value_coef = float(
             getattr(
                 cfg,
@@ -39,7 +38,10 @@ class AsynchMATDMPC:
             for name, p in self.model.named_parameters()
             if "_pi" not in name
         ]
-        self.optim = torch.optim.Adam(model_params, lr=self.cfg.lr)
+        self.optim = torch.optim.Adam(
+            model_params,
+            lr=self.cfg.lr,
+        )
         self.pi_optim = torch.optim.Adam(
             self.model._pi.parameters(),
             lr=self.cfg.lr,
@@ -59,7 +61,8 @@ class AsynchMATDMPC:
     def _make_adj_mask(self, positions):
         """
         positions: [..., N, 2]
-        戻り値: [..., N, N] の bool テンソル。全体通信なら None。
+        戻り値: [..., N, N] の bool テンソル。
+        全体通信なら None。
         """
         if self.comm_range == float("inf") or positions is None:
             return None
@@ -491,7 +494,7 @@ class AsynchMATDMPC:
                     )
                     actor_states.append(e_real.detach())
 
-                    # ログだけが必要な場合も Q を計算する。
+                    # 個別 Q だけの診断時も Q は計算する。
                     if train_joint_value or log_values:
                         z_real = self.model.communicate(
                             e_real,
@@ -554,8 +557,6 @@ class AsynchMATDMPC:
                                 next_a,
                             )
 
-                            # 損失係数と独立に、個別 Q の
-                            # 1-step TD target を診断用に作る。
                             if log_values:
                                 individual_td_target = (
                                     reward[t]
@@ -1062,10 +1063,9 @@ class AsynchMATDMPC:
 
         weighted_loss.backward()
 
-        # クリッピングで隠れる前の勾配を記録。
+        # 指定された５グループのみ、クリッピング前の勾配を記録。
         if self.diagnostics is not None:
             self.diagnostics.gradients(
-                "critic",
                 self.model,
                 self.optim,
             )
@@ -1075,6 +1075,13 @@ class AsynchMATDMPC:
             self.cfg.grad_clip_norm,
         )
         self.optim.step()
+
+        # critic optimizer 更新後のパラメータを記録。
+        if self.diagnostics is not None:
+            self.diagnostics.weights(
+                self.model,
+                self.optim,
+            )
 
         has_priority_signal = (
             train_joint_value
@@ -1099,6 +1106,9 @@ class AsynchMATDMPC:
                 safe_p_loss,
             )
 
+        # ============================================================
+        # Actor 更新
+        # ============================================================
         self.pi_optim.zero_grad(set_to_none=True)
         self.model.track_q_grad(False)
 
@@ -1179,14 +1189,6 @@ class AsynchMATDMPC:
                     )
 
             pi_loss.backward()
-
-            if self.diagnostics is not None:
-                self.diagnostics.gradients(
-                    "actor",
-                    self.model,
-                    self.pi_optim,
-                )
-
             torch.nn.utils.clip_grad_norm_(
                 self.model._pi.parameters(),
                 self.cfg.grad_clip_norm,
@@ -1233,11 +1235,15 @@ class AsynchMATDMPC:
             filepath,
             map_location=self.device,
         )
-        self.model.load_state_dict(checkpoint["model"])
+        self.model.load_state_dict(
+            checkpoint["model"]
+        )
         self.model_target.load_state_dict(
             checkpoint["model_target"]
         )
-        self.optim.load_state_dict(checkpoint["optim"])
+        self.optim.load_state_dict(
+            checkpoint["optim"]
+        )
         self.pi_optim.load_state_dict(
             checkpoint["pi_optim"]
         )

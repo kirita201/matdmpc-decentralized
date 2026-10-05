@@ -17,17 +17,14 @@ class Diagnostics:
         "max_abs",
     ]
 
-    def __init__(self, log_dir, writer, resume_update_step=None):
+    def __init__(self, log_dir, writer, resume_env_step=None):
         self.writer = writer
 
         path = Path(log_dir) / "value_diagnostics.csv"
         path.parent.mkdir(parents=True, exist_ok=True)
 
-        if resume_update_step is not None and path.exists():
-            self._discard_uncommitted_rows(
-                path,
-                int(resume_update_step),
-            )
+        if resume_env_step is not None and path.exists():
+            self._discard_future_rows(path, int(resume_env_step))
 
         exists = path.exists() and path.stat().st_size > 0
         self.file = path.open("a", newline="", encoding="utf-8")
@@ -39,15 +36,15 @@ class Diagnostics:
 
         self.update_index = None
         self.env_step = None
+        self.tensorboard_step = None
 
     @classmethod
-    def _discard_uncommitted_rows(cls, path, first_future_update_step):
+    def _discard_future_rows(cls, path, resume_env_step):
         """
-        チェックポイントより後に書かれた CSV 行を除く。
+        最後のチェックポイントより後の CSV 行を取り除く。
 
-        異常終了時にはログだけがモデルの保存地点より先に
-        進んでいる場合があるため、再実行する更新番号以上の
-        行を削除してから追記を再開する。
+        チェックポイントの step は処理済みなので、
+        次に実行するエピソードの step 以上を削除する。
         """
         temporary_path = None
 
@@ -69,13 +66,15 @@ class Diagnostics:
                     newline="",
                     encoding="utf-8",
                 ) as source_file:
-                    for row in csv.reader(source_file):
+                    reader = csv.reader(source_file)
+
+                    for row in reader:
                         if not row:
                             continue
 
                         if row[0] == "update_index":
                             output.writerow(row)
-                        elif int(row[0]) < first_future_update_step:
+                        elif int(row[1]) < resume_env_step:
                             output.writerow(row)
 
             os.replace(temporary_path, path)
@@ -87,15 +86,25 @@ class Diagnostics:
             ):
                 temporary_path.unlink()
 
-    def set_context(self, update_index, env_step):
+    def set_context(
+        self,
+        update_index,
+        env_step,
+        tensorboard_step,
+    ):
+        # CSV では update_index = update() に渡す update_step。
         self.update_index = int(update_index)
         self.env_step = int(env_step)
+
+        # 全 TensorBoard タグで共通の横軸を使用する。
+        self.tensorboard_step = int(tensorboard_step)
 
     @torch.no_grad()
     def values(self, t, **tensors):
         if self.update_index is None:
             raise RuntimeError(
-                "Diagnostics.set_context() を update() より先に呼んでください"
+                "update() より先に Diagnostics.set_context() "
+                "を呼んでください"
             )
 
         for name, tensor in tensors.items():
@@ -118,32 +127,110 @@ class Diagnostics:
 
         self.file.flush()
 
+    @staticmethod
+    def _base_model(model):
+        # torch.compile されたモデルでは元の MACLM を参照する。
+        return getattr(model, "_orig_mod", model)
+
+    @classmethod
+    def _parameter_groups(cls, model):
+        base = cls._base_model(model)
+
+        return {
+            "q1": (base._Q1,),
+            "q2": (base._Q2,),
+            "Q_joint": (
+                base._mixing1,
+                base._mixing2,
+            ),
+            "reward": (base._reward,),
+            "dynamics": (
+                base._dynamics,
+                base._ln_dyn,
+            ),
+        }
+
+    @staticmethod
+    def _group_norm(tensors):
+        """
+        複数テンソルを連結した場合と同じ L2 ノルム。
+        大きな連結テンソル自体は作らない。
+        """
+        norms = [
+            torch.linalg.vector_norm(
+                tensor.detach().float()
+            )
+            for tensor in tensors
+        ]
+        return torch.linalg.vector_norm(
+            torch.stack(norms)
+        ).item()
+
     @torch.no_grad()
-    def gradients(self, phase, model, optimizer):
-        if self.update_index is None:
+    def gradients(self, model, optimizer):
+        if self.tensorboard_step is None:
             raise RuntimeError(
-                "Diagnostics.set_context() を update() より先に呼んでください"
+                "update() より先に Diagnostics.set_context() "
+                "を呼んでください"
             )
 
-        param_ids = {
+        optimizer_param_ids = {
             id(p)
             for group in optimizer.param_groups
             for p in group["params"]
         }
 
-        for name, p in model.named_parameters():
-            if id(p) not in param_ids or p.grad is None:
+        for name, modules in self._parameter_groups(model).items():
+            grads = [
+                p.grad
+                for module in modules
+                for p in module.parameters()
+                if (
+                    id(p) in optimizer_param_ids
+                    and p.grad is not None
+                )
+            ]
+
+            # 損失係数がゼロなどで勾配がないグループは
+            # 「ゼロだった」と誤解されないよう記録しない。
+            if not grads:
                 continue
 
-            name = name.removeprefix("_orig_mod.")
-            norm = torch.linalg.vector_norm(
-                p.grad.detach().float()
-            ).item()
+            self.writer.add_scalar(
+                f"Grad/{name}",
+                self._group_norm(grads),
+                self.tensorboard_step,
+            )
+
+    @torch.no_grad()
+    def weights(self, model, optimizer):
+        if self.tensorboard_step is None:
+            raise RuntimeError(
+                "update() より先に Diagnostics.set_context() "
+                "を呼んでください"
+            )
+
+        optimizer_param_ids = {
+            id(p)
+            for group in optimizer.param_groups
+            for p in group["params"]
+        }
+
+        for name, modules in self._parameter_groups(model).items():
+            params = [
+                p
+                for module in modules
+                for p in module.parameters()
+                if id(p) in optimizer_param_ids
+            ]
+
+            if not params:
+                continue
 
             self.writer.add_scalar(
-                f"Grad/{phase}/{name}",
-                norm,
-                self.update_index,
+                f"Weight/{name}",
+                self._group_norm(params),
+                self.tensorboard_step,
             )
 
     def close(self):

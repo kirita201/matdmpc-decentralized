@@ -500,7 +500,6 @@ class SynchMATDMPC:
 
         if self.diagnostics is not None:
             self.diagnostics.gradients(
-                "critic",
                 self.model,
                 self.optim,
             )
@@ -510,6 +509,12 @@ class SynchMATDMPC:
             self.cfg.grad_clip_norm,
         )
         self.optim.step()
+
+        if self.diagnostics is not None:
+            self.diagnostics.weights(
+                self.model,
+                self.optim,
+            )
 
         p_loss = (
             priority_loss
@@ -526,6 +531,7 @@ class SynchMATDMPC:
             safe_p_loss,
         )
 
+        # Actor は更新するが、今回の Grad/Weight には記録しない。
         self.pi_optim.zero_grad(set_to_none=True)
         self.model.track_q_grad(False)
 
@@ -535,6 +541,7 @@ class SynchMATDMPC:
                 dtype=torch.bfloat16,
             ):
                 pi_loss = 0
+
                 for t in range(self.cfg.horizon):
                     e_t = es[t]
                     z_pre = self.model.communicate(
@@ -558,19 +565,12 @@ class SynchMATDMPC:
                     )
 
             pi_loss.backward()
-
-            if self.diagnostics is not None:
-                self.diagnostics.gradients(
-                    "actor",
-                    self.model,
-                    self.pi_optim,
-                )
-
             torch.nn.utils.clip_grad_norm_(
                 self.model._pi.parameters(),
                 self.cfg.grad_clip_norm,
             )
             self.pi_optim.step()
+
         finally:
             self.model.track_q_grad(True)
 

@@ -1,3 +1,4 @@
+# train.py
 import os
 import random
 from pathlib import Path
@@ -40,6 +41,15 @@ def set_seed(seed):
     torch.cuda.manual_seed_all(seed)
 
 
+def recorded_reward(reward, reward_type):
+    rewards = np.asarray(reward)
+
+    if reward_type == "global":
+        return float(rewards.reshape(-1)[0])
+
+    return float(rewards.sum())
+
+
 def evaluate(
     env,
     agent,
@@ -54,11 +64,14 @@ def evaluate(
 
     for ep in range(num_episodes):
         obs, info = env.reset()
-        done, ep_reward, t = False, 0, 0
+        done = False
+        ep_reward = 0
+        t = 0
 
         while not done:
             if save_gif and ep == 0:
                 frame = env.render()
+
                 if frame is not None:
                     if isinstance(frame, list):
                         frames.extend(frame)
@@ -72,6 +85,7 @@ def evaluate(
                 step=step,
                 t0=(t == 0),
             )
+
             obs, reward, done, info = env.step(
                 action.cpu().numpy()
             )
@@ -95,29 +109,6 @@ def evaluate(
         )
 
     return np.mean(episode_rewards)
-
-
-def recorded_reward(reward, reward_type):
-    rewards = np.asarray(reward)
-    if reward_type == "global":
-        return float(rewards.reshape(-1)[0])
-    return float(rewards.sum())
-
-
-def first_future_update_step(cfg, next_episode_step):
-    """
-    再開後、最初に実行される update() の update_step を返す。
-    既存の初回更新ルールもそのまま反映する。
-    """
-    update_episode_step = next_episode_step
-
-    while update_episode_step < cfg.seed_steps:
-        update_episode_step += cfg.episode_length
-
-    if update_episode_step == cfg.seed_steps:
-        return 0
-
-    return update_episode_step - cfg.episode_length
 
 
 def train():
@@ -157,6 +148,7 @@ def train():
         f"_algo:{algo_type}"
         f"_comm:{comm_type}"
     )
+
     log_dir = Path("logs") / exp_name
     log_dir.mkdir(
         parents=True,
@@ -182,8 +174,20 @@ def train():
     state_ckpt_path = ckpt_dir / "state_latest.pt"
     buffer_ckpt_path = ckpt_dir / "buffer_latest.pt"
 
+    # 同一 TensorBoard ディレクトリで purge_step を使えるよう、
+    # 全タグに共通の横軸を割り当てる。
+    #
+    # 各エピソード:
+    #   step * tb_stride       : Train/Loss
+    #   step * tb_stride + 1～ : 個々の更新の Grad/Weight
+    #
+    # 初回の seed_steps 回更新も収まる幅を確保する。
+    tb_stride = max(
+        int(cfg.seed_steps),
+        int(cfg.episode_length),
+    ) + 1
+
     writer = None
-    grad_writer = None
     diagnostics = None
 
     try:
@@ -208,14 +212,18 @@ def train():
         if algo_type == "asynch":
             agent = AsynchMATDMPC(cfg)
             buffer = ReplayBuffer(cfg)
+
         elif algo_type == "synch":
             agent = SynchMATDMPC(cfg)
             buffer = ReplayBuffer(cfg)
+
         elif algo_type == "maddpg":
             agent = MADDPG(cfg)
             buffer = ReplayBuffer(cfg)
+
         elif algo_type == "mappo":
             agent = MAPPO(cfg)
+
         else:
             raise ValueError(
                 f"Unknown algo_type: {algo_type}"
@@ -225,6 +233,9 @@ def train():
         episode_idx = 0
         resumed = False
 
+        # ------------------------------------------------------------
+        # チェックポイントからの再開
+        # ------------------------------------------------------------
         if getattr(cfg, "resume", False):
             if (
                 model_ckpt_path.exists()
@@ -235,17 +246,29 @@ def train():
                     "from checkpoints..."
                 )
 
-                agent.load(model_ckpt_path)
                 state = torch.load(
-                    state_ckpt_path
+                    state_ckpt_path,
+                    map_location="cpu",
                 )
 
-                # 既存 checkpoint の step は、保存時点で
-                # すでに処理を終えたエピソードの step。
-                # 同じエピソードをもう一度実行しない。
+                saved_tb_stride = state.get("tb_stride")
+                if (
+                    saved_tb_stride is not None
+                    and int(saved_tb_stride) != tb_stride
+                ):
+                    raise ValueError(
+                        "再開時の seed_steps または "
+                        "episode_length が保存時と異なり、"
+                        "TensorBoard のステップ幅が一致しません。"
+                    )
+
+                agent.load(model_ckpt_path)
+
+                # state["step"] は保存済みエピソードの step。
+                # 同じエピソードを再実行せず、次から始める。
                 start_step = (
                     int(state["step"])
-                    + cfg.episode_length
+                    + int(cfg.episode_length)
                 )
                 episode_idx = int(
                     state["episode_idx"]
@@ -260,9 +283,8 @@ def train():
                         ">>> Resuming replay "
                         "buffer state..."
                     )
-                    buffer.load(
-                        buffer_ckpt_path
-                    )
+                    buffer.load(buffer_ckpt_path)
+
                 elif buffer is not None:
                     print(
                         ">>> Warning: Replay buffer "
@@ -270,50 +292,44 @@ def train():
                         "Starting with an empty buffer."
                     )
 
-        # 通常の Train/Loss はエピソード step が横軸。
-        # purge_step は、checkpoint 後に残った
-        # TensorBoard イベントを再開時に隠す。
+        # Writer は１つだけ。Grad/Weight もこの writer に書く。
+        #
+        # 再開時は、チェックポイントより後のエピソードに
+        # 書かれていたイベントを TensorBoard 上で隠す。
         writer = SummaryWriter(
             log_dir=str(log_dir),
             purge_step=(
-                start_step if resumed else None
+                start_step * tb_stride
+                if resumed
+                else None
             ),
         )
 
         if algo_type in ("asynch", "synch"):
-            resume_update_step = (
-                first_future_update_step(
-                    cfg,
-                    start_step,
-                )
-                if resumed
-                else None
-            )
-
-            # 勾配だけは update_step が横軸。
-            # Train/Loss と横軸の意味が異なるため、
-            # TensorBoard のイベントディレクトリも分離する。
-            grad_writer = SummaryWriter(
-                log_dir=str(
-                    log_dir / "gradients"
-                ),
-                purge_step=resume_update_step,
-            )
             diagnostics = Diagnostics(
                 log_dir,
-                grad_writer,
-                resume_update_step=resume_update_step,
+                writer,
+                resume_env_step=(
+                    start_step
+                    if resumed
+                    else None
+                ),
             )
             agent.diagnostics = diagnostics
 
         initial_random_ratio = 0.8
         decay_steps = 150000
 
+        # ------------------------------------------------------------
+        # メインループ
+        # ------------------------------------------------------------
         for step in range(
             start_step,
             cfg.train_steps + cfg.episode_length,
             cfg.episode_length,
         ):
+            episode_tb_step = step * tb_stride
+
             decay_ratio = max(
                 0.0,
                 1.0 - (step / decay_steps),
@@ -324,9 +340,7 @@ def train():
             )
 
             env.random_ratio = current_ratio
-            eval_env.random_ratio = (
-                current_ratio
-            )
+            eval_env.random_ratio = current_ratio
 
             obs, info = env.reset()
             done = False
@@ -337,6 +351,9 @@ def train():
             ep_cols = []
             ep_pred_catches = 0
 
+            # --------------------------------------------------------
+            # １エピソード分の環境実行
+            # --------------------------------------------------------
             while not done:
                 positions = info.get(
                     "agent_positions",
@@ -344,15 +361,14 @@ def train():
                 )
 
                 if algo_type == "mappo":
-                    action, log_prob, value = (
-                        agent.plan(
-                            obs,
-                            positions=positions,
-                            step=step,
-                            t0=(t == 0),
-                        )
+                    action, log_prob, value = agent.plan(
+                        obs,
+                        positions=positions,
+                        step=step,
+                        t0=(t == 0),
                     )
                     act_np = action.cpu().numpy()
+
                 else:
                     action = agent.plan(
                         obs,
@@ -401,6 +417,7 @@ def train():
                         ),
                         pos_t,
                     )
+
                 else:
                     buffer.add(
                         obs,
@@ -412,6 +429,7 @@ def train():
 
                 obs = next_obs
                 info = next_info
+
                 ep_reward += recorded_reward(
                     reward,
                     reward_type,
@@ -421,10 +439,12 @@ def train():
                     ep_goals.append(
                         info["goals_occupied_now"]
                     )
+
                 if "collisions_now" in info:
                     ep_cols.append(
                         info["collisions_now"]
                     )
+
                 if "predator_catch" in info:
                     ep_pred_catches += (
                         info["predator_catch"]
@@ -432,22 +452,25 @@ def train():
 
                 t += 1
 
+            # --------------------------------------------------------
+            # エピソード指標
+            # --------------------------------------------------------
             writer.add_scalar(
                 "Train/EpisodeReward",
                 ep_reward,
-                step,
+                episode_tb_step,
             )
 
             if ep_goals:
                 writer.add_scalar(
                     "Train/GoalsOccupied_End",
                     ep_goals[-1],
-                    step,
+                    episode_tb_step,
                 )
                 writer.add_scalar(
                     "Train/Collisions_Sum",
                     np.sum(ep_cols),
-                    step,
+                    episode_tb_step,
                 )
 
             if (
@@ -457,22 +480,29 @@ def train():
                 writer.add_scalar(
                     "Train/PredatorCatches_Sum",
                     ep_pred_catches,
-                    step,
+                    episode_tb_step,
                 )
 
+            # --------------------------------------------------------
+            # モデル更新
+            # --------------------------------------------------------
             if algo_type == "mappo":
-                if len(
-                    agent.buffer.rewards
-                ) >= getattr(
+                rollout_length = getattr(
                     cfg,
                     "rollout_length",
                     cfg.episode_length,
+                )
+
+                if (
+                    len(agent.buffer.rewards)
+                    >= rollout_length
                 ):
                     next_obs_t = torch.tensor(
                         obs,
                         dtype=torch.float32,
                         device=agent.device,
                     )
+
                     next_pos_t = (
                         torch.tensor(
                             info["agent_positions"],
@@ -488,11 +518,12 @@ def train():
                         next_pos_t,
                         float(done),
                     )
-                    for k, v in loss_info.items():
+
+                    for name, value in loss_info.items():
                         writer.add_scalar(
-                            f"Loss/{k}",
-                            v,
-                            step,
+                            f"Loss/{name}",
+                            value,
+                            episode_tb_step,
                         )
 
             elif step >= cfg.seed_steps:
@@ -501,18 +532,20 @@ def train():
                     if step == cfg.seed_steps
                     else cfg.episode_length
                 )
+
                 update_iterator = (
                     tqdm(
                         range(num_updates),
                         desc="Initial Updates",
                     )
-                    if num_updates
-                    > cfg.episode_length
+                    if num_updates > cfg.episode_length
                     else range(num_updates)
                 )
+
                 loss_accum = {}
 
                 for i in update_iterator:
+                    # 従来どおり agent.update() に渡す step。
                     update_step = (
                         i
                         if step == cfg.seed_steps
@@ -524,11 +557,14 @@ def train():
                     )
 
                     if diagnostics is not None:
-                        # 勾配と CSV の横軸を、
-                        # この update() の step と一致させる。
                         diagnostics.set_context(
-                            update_step,
-                            step,
+                            update_index=update_step,
+                            env_step=step,
+                            tensorboard_step=(
+                                episode_tb_step
+                                + i
+                                + 1
+                            ),
                         )
 
                     loss_info = agent.update(
@@ -555,10 +591,11 @@ def train():
                     writer.add_scalar(
                         f"Loss/{loss_name}",
                         loss_sum / num_updates,
-                        step,
+                        episode_tb_step,
                     )
 
             episode_idx += 1
+
             if episode_idx % 5 == 0:
                 print(
                     f"Step: {step}, "
@@ -566,8 +603,9 @@ def train():
                     f"Reward: {ep_reward:.3f}"
                 )
 
-            # step 0 は保存しないが、再開直後の
-            # 保存対象ステップは除外しない。
+            # --------------------------------------------------------
+            # チェックポイント
+            # --------------------------------------------------------
             if (
                 step > 0
                 and step
@@ -578,13 +616,13 @@ def train():
                 )
                 == 0
             ):
-                agent.save(
-                    model_ckpt_path
-                )
+                agent.save(model_ckpt_path)
+
                 torch.save(
                     {
                         "step": step,
                         "episode_idx": episode_idx,
+                        "tb_stride": tb_stride,
                     },
                     state_ckpt_path,
                 )
@@ -600,6 +638,9 @@ def train():
                     f"saved at Step {step}"
                 )
 
+            # --------------------------------------------------------
+            # 評価
+            # --------------------------------------------------------
             if (
                 step % cfg.eval_freq == 0
                 and step > 0
@@ -617,11 +658,11 @@ def train():
                     f">>> EVAL at Step {step}: "
                     f"Reward = {eval_reward:.3f}"
                 )
+
     finally:
         if diagnostics is not None:
             diagnostics.close()
-        if grad_writer is not None:
-            grad_writer.close()
+
         if writer is not None:
             writer.close()
 

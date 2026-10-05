@@ -1,4 +1,4 @@
-# algorithm/model.py
+# algorithm/models.py
 import torch
 import torch.nn as nn
 import algorithm.helper as h
