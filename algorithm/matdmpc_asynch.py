@@ -221,6 +221,7 @@ class AsynchMATDMPC:
                     idx = torch.arange(N, device=self.device)
 
                     for t in range(H):
+                        # 各エージェントの暫定行動系列を使って方策入力を作る
                         a_guess = (
                             self._prev_mean[:, t]
                             .unsqueeze(0)
@@ -234,23 +235,36 @@ class AsynchMATDMPC:
                         )
 
                         pi_views = self.model.pi(z_views, self.std)
+
+                        # view n での、対象エージェント n の方策出力
+                        # shape: [N, S, A]
                         a_self = pi_views[idx, :, idx, :]
                         a_pi[t] = a_self
 
-                        a_joint = a_self.permute(1, 0, 2)
+                        # 各view用のjoint actionを、まず全員の暫定行動で埋める。
+                        # shape: [N, S, N, A]
+                        #   第1軸: どのエージェントのviewか
+                        #   第2軸: 軌道サンプル
+                        #   第3軸: joint action中のエージェント
+                        a_roll_views = (
+                            self._prev_mean[:, t]
+                            .view(1, 1, N, A)
+                            .expand(N, S, N, A)
+                            .clone()
+                        )
+
+                        # view n では、エージェント n の行動だけをactor出力に置き換える。
+                        # それ以外のエージェントは _prev_mean[:, t] のまま。
+                        a_roll_views[idx, :, idx, :] = a_self
 
                         z_next = self.model.communicate_per_agent(
                             e_views,
-                            a_joint,
+                            a_roll_views,
                             adj_mask_per_agent=view_masks_pi,
                         )
 
                         z_flat = z_next.reshape(N * S, N, -1)
-                        a_flat = (
-                            a_joint.unsqueeze(0)
-                            .expand(N, S, N, A)
-                            .reshape(N * S, N, A)
-                        )
+                        a_flat = a_roll_views.reshape(N * S, N, A)
 
                         next_e_flat, _ = self.model.next(
                             z_flat,

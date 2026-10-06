@@ -239,13 +239,12 @@ class PredatorPreyScenario(BaseScenario):
                 catching_advs = [a for a in self.adversaries(world) if self.is_collision(a, prey)]
                 if catching_advs:
                     catch_count += 1
-                    caught = True
                     if agent in catching_advs:
                         rew += 10.0
                     else:
                         d = np.linalg.norm(agent.state.p_pos - prey.state.p_pos)
                         if d <= self.obs_range:
-                            rew += 5.0 * max(0.0, 1.0 - (d / self.obs_range))
+                            rew += 3.0
         else:
             for prey in self.good_agents(world):
                 caught_by_anyone = False

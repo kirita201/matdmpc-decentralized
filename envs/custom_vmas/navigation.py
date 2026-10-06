@@ -228,7 +228,7 @@ class NavigationScenario(BaseScenario):
         
         occupied = curr_dist < self.goal_radius
         self.occupied_goals[:, i] = occupied
-        reward_occ = occupied.float() * 0.15
+        reward_occ = occupied.float() * 0.05
         
         collision_penalty = torch.zeros(self.world.batch_dim, device=self.world.device)
         num_cols = torch.zeros(self.world.batch_dim, device=self.world.device, dtype=torch.int32)
@@ -237,19 +237,19 @@ class NavigationScenario(BaseScenario):
         for other in self.agents_list:
             if other is not agent:
                 col = torch.norm(agent.state.pos - other.state.pos, dim=-1) < (self.agent_radius + self.agent_radius)
-                collision_penalty[col] -= 0.05
+                collision_penalty[col] -= 0.1
                 num_cols[col] += 1
                 
         # 障害物との衝突
         for obs in self.obstacles:
             col = torch.norm(agent.state.pos - obs.state.pos, dim=-1) < (self.agent_radius + self.obstacle_radius)
-            collision_penalty[col] -= 0.05
+            collision_penalty[col] -= 0.1
             num_cols[col] += 1
             
         # ▼ 追加: 周囲の壁との衝突ペナルティ (外周境界2.0からエージェント半径0.2以内)
         wall_col = (torch.abs(agent.state.pos[:, 0]) > (2.0 - self.agent_radius)) | \
                    (torch.abs(agent.state.pos[:, 1]) > (2.0 - self.agent_radius))
-        collision_penalty[wall_col] -= 0.05
+        collision_penalty[wall_col] -= 0.1
         num_cols[wall_col] += 1
             
         self.collisions[:, i] = num_cols
