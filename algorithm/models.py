@@ -5,19 +5,27 @@ import algorithm.helper as h
 
 class TransformerComm(nn.Module):
     """Transformer-based Communication Module"""
-    def __init__(self, cfg):
+    def __init__(self, cfg, dropout=0.1):
         super().__init__()
-        self.d_model = cfg.latent_dim 
-        
-        # 入力を d_model に変換する層を追加
-        self.in_proj = nn.Linear(cfg.latent_dim + cfg.action_dim, self.d_model)
-        encoder_layer = nn.TransformerEncoderLayer(
-            d_model=self.d_model, 
-            nhead=cfg.n_heads, 
-            dim_feedforward=cfg.mlp_dim, 
-            batch_first=True
+        self.d_model = cfg.latent_dim
+
+        self.in_proj = nn.Linear(
+            cfg.latent_dim + cfg.action_dim,
+            self.d_model,
         )
-        self.transformer = nn.TransformerEncoder(encoder_layer, num_layers=cfg.n_com_layers)
+
+        encoder_layer = nn.TransformerEncoderLayer(
+            d_model=self.d_model,
+            nhead=cfg.n_heads,
+            dim_feedforward=cfg.mlp_dim,
+            dropout=dropout,
+            batch_first=True,
+        )
+
+        self.transformer = nn.TransformerEncoder(
+            encoder_layer,
+            num_layers=cfg.n_com_layers,
+        )
         self.out_proj = nn.Linear(self.d_model, cfg.latent_dim)
 
     def forward(self, e, a, adj_mask=None):

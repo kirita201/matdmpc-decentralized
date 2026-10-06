@@ -7,24 +7,44 @@ class MFActor(nn.Module):
     def __init__(self, cfg):
         super().__init__()
         self.cfg = cfg
-        self.use_comm = getattr(cfg, "comm_type", "none") in ["local", "global"]
-        
-        self.enc = h.mlp(cfg.obs_shape[0], cfg.enc_dim, cfg.latent_dim)
+        self.use_comm = getattr(
+            cfg,
+            "comm_type",
+            "none",
+        ) in ("local", "global")
+
+        self.enc = h.mlp(
+            cfg.obs_shape[0],
+            cfg.enc_dim,
+            cfg.latent_dim,
+        )
+
         if self.use_comm:
-            self.comm = TransformerComm(cfg)
-        
-        # 連続値 [0, 1] を出力するため Sigmoid を使用
-        self.out = h.mlp(cfg.latent_dim, cfg.mlp_dim, cfg.action_dim)
+            # MAPPO の行動時と PPO 更新時で dropout による
+            # 方策の確率変動を起こさない。
+            self.comm = TransformerComm(cfg, dropout=0.0)
+
+        self.out = h.mlp(
+            cfg.latent_dim,
+            cfg.mlp_dim,
+            cfg.action_dim,
+        )
 
     def forward(self, obs, adj_mask=None):
         e = self.enc(obs)
+
         if self.use_comm:
-            # TransformerComm は行動(a)も要求するため、Actor の推論時は 0 テンソルでパディング
-            dummy_a = torch.zeros(e.shape[0], self.cfg.num_agents, self.cfg.action_dim, device=e.device)
+            dummy_a = torch.zeros(
+                *e.shape[:-1],
+                self.cfg.action_dim,
+                device=e.device,
+                dtype=e.dtype,
+            )
             e = self.comm(e, dummy_a, adj_mask)
-        
-        mu = torch.sigmoid(self.out(e))
-        return mu
+
+        # sigmoid はここで掛けない。
+        # Normal 分布の「変換前の平均」を返す。
+        return self.out(e)
 
 class MFCritic(nn.Module):
     def __init__(self, cfg, use_action=False):

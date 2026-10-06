@@ -84,3 +84,12 @@ ppo_clip_param: 0.2
 entropy_coef: 0.01
 rollout_length: 200      # 1エピソード長(episode_length)に合わせるか、その倍数が推奨
 gae_lambda: 0.95
+
+
+# 正規分布の sigmoid 変換「前」の標準偏差。
+# TD-MPC の min_std とは別設定。
+ppo_std: 0.7
+
+# １ミニバッチあたりの環境時刻数。
+# 各時刻の全エージェントを含む。
+ppo_minibatch_size: 64
