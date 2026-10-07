@@ -279,7 +279,9 @@ class AsynchMATDMPC:
 
                         # view n では、エージェント n の行動だけをactor出力に置き換える。
                         # それ以外のエージェントは _prev_mean[:, t] のまま。
-                        a_roll_views[agent_idx, :, agent_idx, :] = a_self
+                        a_roll_views[agent_idx, :, agent_idx, :] = a_self.to(
+                            dtype=a_roll_views.dtype
+                        )
 
                         z_next = self.model.communicate_per_agent(
                             e_views,
@@ -315,9 +317,9 @@ class AsynchMATDMPC:
                     .clone()
                 )
 
-                joint_all[
-                    agent_idx, :, :, agent_idx, :
-                ] = actions_all.permute(1, 0, 2, 3)
+                joint_all[agent_idx, :, :, agent_idx, :] = (
+                    actions_all.permute(1, 0, 2, 3).to(dtype=joint_all.dtype)
+                )
 
 
                 joint_flat = (
