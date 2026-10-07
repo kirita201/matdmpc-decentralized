@@ -181,7 +181,19 @@ class MACLM(nn.Module):
         e_flat = e_per_agent.reshape(N * B, N, latent)
 
         # a: [B, N, action_dim] -> [N*B, N, action_dim]
-        a_flat = a.unsqueeze(0).expand(N, B, N, -1).reshape(N * B, N, -1)
+        # a: [B, N, A] または [N, B, N, A]
+        if a.ndim == 4:
+            # view ごとに異なる joint action
+            if a.shape[:3] != (N, B, N):
+                raise ValueError(
+                    f"Expected a.shape[:3] == {(N, B, N)}, got {tuple(a.shape)}"
+                )
+            a_flat = a.reshape(N * B, N, a.shape[-1])
+        elif a.ndim == 3:
+            # 全 view で同じ joint action（従来の動作）
+            a_flat = a.unsqueeze(0).expand(N, B, N, -1).reshape(N * B, N, -1)
+        else:
+            raise ValueError(f"Unexpected action shape: {tuple(a.shape)}")
 
         # マスクを [N*B, N, N] に畳む
         mask_flat = adj_mask_per_agent.reshape(N * B, N, N) if adj_mask_per_agent is not None else None
