@@ -172,6 +172,39 @@ class AsynchMATDMPC:
         N, H, A = self.N, horizon, self.cfg.action_dim
         B = total_samples
 
+        agent_idx = torch.arange(N, device=self.device)
+
+        # 各候補軌道の初期状態。反復中に e0 と B は変わらない。
+        e_all = e0.repeat(N * B, 1, 1)
+
+        # 他エージェントに仮定する行動。
+        # _prev_mean は CEM 反復中には更新されない。
+        joint_base = (
+            self._prev_mean[:, :H]
+            .permute(1, 0, 2)
+            .unsqueeze(1)
+            .expand(H, B, N, A)
+        )
+
+        if adj_mask_1 is not None:
+            view_masks_1 = self._make_view_masks(adj_mask_1)
+
+            adj_mask_NB = (
+                view_masks_1
+                .expand(N, B, N, N)
+                .reshape(N * B, N, N)
+            )
+
+            if num_pi_trajs > 0:
+                view_masks_pi = view_masks_1.expand(
+                    N, num_pi_trajs, N, N
+                )
+            else:
+                view_masks_pi = None
+        else:
+            adj_mask_NB = None
+            view_masks_pi = None
+
         mean = self._prev_mean[:, :H].clone()
         std = 2 * torch.ones(N, H, A, device=self.device)
 
@@ -210,15 +243,6 @@ class AsynchMATDMPC:
                         .clone()
                     )
 
-                    if adj_mask_1 is not None:
-                        view_masks_pi = (
-                            self._make_view_masks(adj_mask_1)
-                            .expand(N, S, N, N)
-                        )
-                    else:
-                        view_masks_pi = None
-
-                    idx = torch.arange(N, device=self.device)
 
                     for t in range(H):
                         # 各エージェントの暫定行動系列を使って方策入力を作る
@@ -238,7 +262,7 @@ class AsynchMATDMPC:
 
                         # view n での、対象エージェント n の方策出力
                         # shape: [N, S, A]
-                        a_self = pi_views[idx, :, idx, :]
+                        a_self = pi_views[agent_idx, :, agent_idx, :]
                         a_pi[t] = a_self
 
                         # 各view用のjoint actionを、まず全員の暫定行動で埋める。
@@ -255,7 +279,7 @@ class AsynchMATDMPC:
 
                         # view n では、エージェント n の行動だけをactor出力に置き換える。
                         # それ以外のエージェントは _prev_mean[:, t] のまま。
-                        a_roll_views[idx, :, idx, :] = a_self
+                        a_roll_views[agent_idx, :, agent_idx, :] = a_self
 
                         z_next = self.model.communicate_per_agent(
                             e_views,
@@ -284,43 +308,24 @@ class AsynchMATDMPC:
                 else:
                     actions_all = a_random
 
-                joint_base = (
-                    self._prev_mean[:, :H]
-                    .permute(1, 0, 2)
-                    .unsqueeze(1)
-                    .expand(H, B, N, A)
-                )
+
                 joint_all = (
                     joint_base.unsqueeze(0)
                     .expand(N, H, B, N, A)
                     .clone()
                 )
-                agent_idx_t = torch.arange(
-                    N,
-                    device=self.device,
-                )
+
                 joint_all[
-                    agent_idx_t, :, :, agent_idx_t, :
+                    agent_idx, :, :, agent_idx, :
                 ] = actions_all.permute(1, 0, 2, 3)
 
-                e_all = e0.repeat(N * B, 1, 1)
+
                 joint_flat = (
                     joint_all
                     .permute(1, 0, 2, 3, 4)
                     .reshape(H, N * B, N, A)
                 )
 
-                if adj_mask_1 is not None:
-                    view_masks_1 = self._make_view_masks(
-                        adj_mask_1
-                    )
-                    adj_mask_NB = (
-                        view_masks_1
-                        .expand(N, B, N, N)
-                        .reshape(N * B, N, N)
-                    )
-                else:
-                    adj_mask_NB = None
 
                 values_flat = self.estimate_value(
                     e_all,
@@ -328,33 +333,36 @@ class AsynchMATDMPC:
                     horizon,
                     adj_mask=adj_mask_NB,
                 )
-                values = torch.stack(
-                    [
-                        values_flat[n * B:(n + 1) * B, n]
-                        for n in range(N)
-                    ],
-                    dim=0,
-                )
+                # values_flat: [N * B, N]
+                # 第１軸の並びは「対象エージェント n → 候補 b」。
+                values = values_flat.reshape(N, B, N)[
+                    agent_idx, :, agent_idx
+                ]  # [N, B]
 
                 elite_idxs = torch.topk(
                     values,
                     self.cfg.num_elites,
                     dim=1,
-                ).indices
-                elite_actions = torch.stack(
-                    [
-                        actions_all[:, n, elite_idxs[n], :]
-                        for n in range(N)
-                    ],
-                    dim=0,
-                )
-                elite_value = torch.stack(
-                    [
-                        values[n, elite_idxs[n]]
-                        for n in range(N)
-                    ],
-                    dim=0,
-                ).float()
+                ).indices  # [N, K]
+
+                # actions_all: [H, N, B, A] -> [N, B, H, A]
+                candidate_actions = actions_all.permute(1, 2, 0, 3)
+
+                selected_actions = candidate_actions.gather(
+                    dim=1,
+                    index=elite_idxs[:, :, None, None].expand(
+                        -1, -1, H, A
+                    ),
+                )  # [N, K, H, A]
+
+                elite_actions = selected_actions.permute(
+                    0, 2, 1, 3
+                )  # [N, H, K, A]
+
+                elite_value = values.gather(
+                    dim=1,
+                    index=elite_idxs,
+                ).float()  # [N, K]
 
                 max_value = elite_value.max(
                     dim=1,
@@ -387,27 +395,25 @@ class AsynchMATDMPC:
                 std = _std
 
         self._prev_mean[:, :H] = mean
-        score_np = score.float().cpu().numpy()
 
-        final_actions = torch.zeros(
-            N,
-            A,
-            device=self.device,
-        )
-        for n in range(N):
-            best_idx = np.random.choice(
-                self.cfg.num_elites,
-                p=score_np[n],
+        # score: [N, K]。各エージェントについて elite を１つ選ぶ。
+        chosen = torch.multinomial(
+            score.float(),
+            num_samples=1,
+        ).squeeze(1)  # [N]
+
+        agent_idx = torch.arange(N, device=self.device)
+        final_actions = elite_actions[
+            agent_idx, 0, chosen
+        ]  # [N, A]
+
+        if not eval_mode:
+            final_actions = (
+                final_actions
+                + std[:, 0] * torch.randn_like(final_actions)
             )
-            a = elite_actions[n, 0, best_idx]
-            if not eval_mode:
-                a = a + std[n, 0] * torch.randn(
-                    A,
-                    device=self.device,
-                )
-            final_actions[n] = a.clamp(0, 1)
 
-        return final_actions
+        return final_actions.clamp(0, 1)
 
     def update(self, replay_buffer, step):
         """価値・方策は実観測 latent、モデル損失は予測 latent で学習。"""
