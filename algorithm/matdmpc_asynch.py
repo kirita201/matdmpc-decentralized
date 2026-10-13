@@ -418,17 +418,14 @@ class AsynchMATDMPC:
         return final_actions.clamp(0, 1)
 
     def update(self, replay_buffer, step):
-        """価値・方策は実観測 latent、モデル損失は予測 latent で学習。"""
+        """Q・QMIX・Actor を遷移予測 latent 上で学習する。"""
         beta = h.linear_schedule(self.cfg.per_beta, step)
         obs, next_obses, action, reward, positions, idxs, weights = (
             replay_buffer.sample(beta)
         )
 
         self.optim.zero_grad(set_to_none=True)
-        self.std = h.linear_schedule(
-            self.cfg.std_schedule,
-            step,
-        )
+        self.std = h.linear_schedule(self.cfg.std_schedule, step)
         self.model.train()
 
         N = self.N
@@ -439,6 +436,12 @@ class AsynchMATDMPC:
         train_joint_value = self.joint_value_coef != 0.0
         train_individual_value = self.individual_value_coef != 0.0
         log_values = self.diagnostics is not None
+        need_q = (
+            train_joint_value
+            or train_individual_value
+            or log_values
+        )
+        reward_type = getattr(self.cfg, "reward_type", "individual")
 
         with torch.no_grad():
             value_adj = [
@@ -446,7 +449,6 @@ class AsynchMATDMPC:
                 for t in range(H + 1)
             ]
             rollout_adj = value_adj[0]
-
             value_view_adj = [
                 self._make_view_masks(mask)
                 if mask is not None
@@ -458,260 +460,58 @@ class AsynchMATDMPC:
         if (
             rollout_adj is not None
             and train_individual_value
-            and getattr(
-                self.cfg,
-                "reward_type",
-                "individual",
-            ) != "individual"
+            and reward_type != "individual"
         ):
             raise ValueError(
                 "局所通信で individual_value_coef != 0 とする場合は、"
                 "reward_type='individual' が必要です"
             )
 
+        # Critic 更新後の Actor 更新に使用する。
+        # 予測 latent 自体は保存するが、Actor 損失から遷移モデルへは
+        # 逆伝播させない。
+        actor_states = []
+
         with torch.autocast(
             device_type=self.device.type,
             dtype=torch.bfloat16,
         ):
             e0 = self.model.encode(obs)
-            actor_states = []
 
-            consistency_loss = torch.zeros(
-                B,
-                device=self.device,
-            )
-            reward_loss = torch.zeros(
-                B,
-                device=self.device,
-            )
-            joint_value_loss = torch.zeros(
-                B,
-                device=self.device,
-            )
-            individual_value_loss = torch.zeros(
-                B,
-                device=self.device,
-            )
-            priority_loss = torch.zeros(
-                B,
-                device=self.device,
-            )
+            consistency_loss = torch.zeros(B, device=self.device)
+            reward_loss = torch.zeros(B, device=self.device)
+            joint_value_loss = torch.zeros(B, device=self.device)
+            individual_value_loss = torch.zeros(B, device=self.device)
+            priority_loss = torch.zeros(B, device=self.device)
 
-            # ============================================================
-            # 全体通信
-            # ============================================================
             if rollout_adj is None:
                 e_roll = e0
 
-                for t in range(H):
-                    current_obs = (
-                        obs
-                        if t == 0
-                        else next_obses[t - 1]
-                    )
-                    e_real = (
-                        e0
-                        if t == 0
-                        else self.model.encode(current_obs)
-                    )
-                    actor_states.append(e_real.detach())
-
-                    # 個別 Q だけの診断時も Q は計算する。
-                    if train_joint_value or log_values:
-                        z_real = self.model.communicate(
-                            e_real,
-                            action[t],
-                            adj_mask=None,
-                        )
-                        q1, q2 = self.model.Q(
-                            z_real,
-                            action[t],
-                        )
-
-                        if train_joint_value:
-                            q_joint1, q_joint2 = (
-                                self.model.Q_joint(
-                                    q1,
-                                    q2,
-                                    e_real,
-                                )
-                            )
-
-                    z_roll = self.model.communicate(
-                        e_roll,
-                        action[t],
-                        adj_mask=None,
-                    )
-                    e_roll, reward_pred = self.model.next(
-                        z_roll,
-                        action[t],
-                    )
-
-                    with torch.no_grad():
-                        next_e_target = (
-                            self.model_target.encode(
-                                next_obses[t]
-                            )
-                        )
-
-                        if train_joint_value or log_values:
-                            next_z_for_pi = (
-                                self.model.communicate(
-                                    next_e_target,
-                                    action[t + 1],
-                                    adj_mask=None,
-                                )
-                            )
-                            next_a = self.model.pi(
-                                next_z_for_pi,
-                                self.cfg.min_std,
-                            )
-
-                            next_z_for_q = (
-                                self.model_target.communicate(
-                                    next_e_target,
-                                    next_a,
-                                    adj_mask=None,
-                                )
-                            )
-                            nq1, nq2 = self.model_target.Q(
-                                next_z_for_q,
-                                next_a,
-                            )
-
-                            if log_values:
-                                individual_td_target = (
-                                    reward[t]
-                                    + self.cfg.discount
-                                    * torch.min(nq1, nq2)
-                                )
-
-                            if train_joint_value:
-                                nq_joint1, nq_joint2 = (
-                                    self.model_target.Q_joint(
-                                        nq1,
-                                        nq2,
-                                        next_e_target,
-                                    )
-                                )
-                                nq_joint = torch.min(
-                                    nq_joint1,
-                                    nq_joint2,
-                                )
-
-                                joint_reward = (
-                                    reward[t][:, :1]
-                                    if getattr(
-                                        self.cfg,
-                                        "reward_type",
-                                        "individual",
-                                    ) == "global"
-                                    else reward[t].sum(
-                                        dim=1,
-                                        keepdim=True,
-                                    )
-                                )
-                                joint_td_target = (
-                                    joint_reward
-                                    + self.cfg.discount
-                                    * nq_joint
-                                )
-
-                    if log_values:
-                        self.diagnostics.values(
-                            t,
-                            q1=q1,
-                            q2=q2,
-                            individual_td_target=individual_td_target,
-                            q_joint1=(
-                                q_joint1
-                                if train_joint_value
-                                else None
-                            ),
-                            q_joint2=(
-                                q_joint2
-                                if train_joint_value
-                                else None
-                            ),
-                            joint_td_target=(
-                                joint_td_target
-                                if train_joint_value
-                                else None
-                            ),
-                        )
-
-                    rho = self.cfg.rho ** t
-
-                    consistency_loss += rho * h.mse(
-                        e_roll,
-                        next_e_target,
-                        reduce=False,
-                    ).mean(dim=(1, 2))
-
-                    reward_loss += rho * h.mse(
-                        reward_pred,
-                        reward[t],
-                        reduce=False,
-                    ).mean(dim=1)
-
-                    if train_joint_value:
-                        joint_value_loss += rho * (
-                            h.mse(
-                                q_joint1.float(),
-                                joint_td_target.float(),
-                                reduce=False,
-                            )
-                            + h.mse(
-                                q_joint2.float(),
-                                joint_td_target.float(),
-                                reduce=False,
-                            )
-                        ).squeeze(-1)
-
-                        priority_loss += rho * (
-                            h.l1(
-                                q_joint1,
-                                joint_td_target,
-                                reduce=False,
-                            )
-                            + h.l1(
-                                q_joint2,
-                                joint_td_target,
-                                reduce=False,
-                            )
-                        ).squeeze(-1)
-
-            # ============================================================
-            # 局所通信
-            # ============================================================
             else:
+                # 第１軸は「どのエージェントから見た予測か」。
                 e_roll_views = (
                     e0.unsqueeze(0)
                     .expand(N, -1, -1, -1)
                     .contiguous()
                 )
 
-                neighbor_mask = rollout_adj.permute(
-                    1,
-                    0,
-                    2,
-                ).float()
+                neighbor_mask = rollout_adj.permute(1, 0, 2).float()
                 neighbor_count = (
-                    neighbor_mask.sum(dim=2)
-                    .clamp(min=1.0)
+                    neighbor_mask.sum(dim=2).clamp(min=1.0)
                 )
 
                 self_mask = torch.eye(
                     N,
                     dtype=neighbor_mask.dtype,
-                    device=neighbor_mask.device,
+                    device=self.device,
                 ).unsqueeze(1)
 
                 other_neighbor_mask = (
                     neighbor_mask * (1.0 - self_mask)
                 )
                 other_neighbor_count = (
-                    other_neighbor_mask.sum(dim=2)
+                    other_neighbor_mask
+                    .sum(dim=2)
                     .clamp(min=1.0)
                 )
 
@@ -722,81 +522,93 @@ class AsynchMATDMPC:
                         0.5,
                     )
                 )
-                reward_type = getattr(
-                    self.cfg,
-                    "reward_type",
-                    "individual",
-                )
 
-                for t in range(H):
-                    current_obs = (
-                        obs
-                        if t == 0
-                        else next_obses[t - 1]
-                    )
-                    e_real = (
-                        e0
-                        if t == 0
-                        else self.model.encode(current_obs)
-                    )
-                    e_real_views = (
-                        e_real.unsqueeze(0)
-                        .expand(N, -1, -1, -1)
-                        .contiguous()
-                    )
+            for t in range(H):
+                rho = self.cfg.rho ** t
 
-                    actor_states.append(
-                        e_real_views.detach()
-                    )
+                # ------------------------------------------------------------
+                # 現在時刻の Q と、次時刻の予測 latent
+                # ------------------------------------------------------------
+                if rollout_adj is None:
+                    # t=0 は e0。それ以降は直前の next() の予測。
+                    actor_states.append(e_roll.detach())
 
-                    if (
-                        train_joint_value
-                        or train_individual_value
-                        or log_values
-                    ):
-                        z_real_views = (
-                            self.model.communicate_per_agent(
-                                e_real_views,
-                                action[t],
-                                adj_mask_per_agent=(
-                                    value_view_adj[t]
-                                ),
-                            )
+                    if need_q:
+                        z_q = self.model.communicate(
+                            e_roll,
+                            action[t],
+                            adj_mask=None,
                         )
-                        z_real_self = z_real_views[
-                            agent_idx, :, agent_idx, :
-                        ].permute(1, 0, 2)
-
                         q1, q2 = self.model.Q(
-                            z_real_self,
+                            z_q,
                             action[t],
                         )
 
                         if train_joint_value:
+                            q_joint1, q_joint2 = self.model.Q_joint(
+                                q1,
+                                q2,
+                                e_roll,
+                            )
+
+                    z_transition = self.model.communicate(
+                        e_roll,
+                        action[t],
+                        adj_mask=None,
+                    )
+                    next_e_roll, reward_pred = self.model.next(
+                        z_transition,
+                        action[t],
+                    )
+
+                else:
+                    actor_states.append(e_roll_views.detach())
+
+                    if need_q:
+                        z_q_views = (
+                            self.model.communicate_per_agent(
+                                e_roll_views,
+                                action[t],
+                                adj_mask_per_agent=value_view_adj[t],
+                            )
+                        )
+
+                        z_q_self = z_q_views[
+                            agent_idx, :, agent_idx, :
+                        ].permute(1, 0, 2)
+
+                        q1, q2 = self.model.Q(
+                            z_q_self,
+                            action[t],
+                        )
+
+                        if train_joint_value:
+                            # 各エージェント自身の視点で予測した
+                            # 「自身の latent」を N 個結合する。
+                            e_joint = e_roll_views[
+                                agent_idx, :, agent_idx, :
+                            ].permute(1, 0, 2)
+
                             q_joint1, q_joint2 = (
                                 self.model.Q_joint(
                                     q1,
                                     q2,
-                                    e_real,
+                                    e_joint,
                                 )
                             )
 
-                    z_roll_views = (
+                    z_transition_views = (
                         self.model.communicate_per_agent(
                             e_roll_views,
                             action[t],
-                            adj_mask_per_agent=(
-                                rollout_view_adj
-                            ),
+                            adj_mask_per_agent=rollout_view_adj,
                         )
                     )
 
-                    z_roll_flat = z_roll_views.reshape(
-                        N * B,
-                        N,
-                        -1,
+                    z_flat = z_transition_views.reshape(
+                        N * B, N, -1
                     )
-                    a_roll_flat = (
+                    a_flat = (
                         action[t]
                         .unsqueeze(0)
                         .expand(N, -1, -1, -1)
@@ -804,50 +616,62 @@ class AsynchMATDMPC:
                     )
 
                     next_e_flat, reward_pred_flat = (
-                        self.model.next(
-                            z_roll_flat,
-                            a_roll_flat,
-                        )
+                        self.model.next(z_flat, a_flat)
                     )
-                    next_e_roll_views = (
-                        next_e_flat.reshape(
-                            N,
-                            B,
-                            N,
-                            -1,
-                        )
+                    next_e_roll_views = next_e_flat.reshape(
+                        N, B, N, -1
                     )
-                    reward_pred_views = (
-                        reward_pred_flat.reshape(
-                            N,
-                            B,
-                            N,
-                        )
+                    reward_pred_views = reward_pred_flat.reshape(
+                        N, B, N
                     )
 
-                    with torch.no_grad():
-                        next_e_target = (
-                            self.model_target.encode(
-                                next_obses[t]
+                # ------------------------------------------------------------
+                # TD ターゲット
+                # Q の入力には実観測の encode 結果ではなく、
+                # 上で得た「次時刻の予測 latent」を使う。
+                # ------------------------------------------------------------
+                with torch.no_grad():
+                    # 実観測 latent は整合性損失の教師にのみ使う。
+                    next_e_observed = self.model_target.encode(
+                        next_obses[t]
+                    )
+
+                    if need_q:
+                        if rollout_adj is None:
+                            next_e_value = next_e_roll.detach()
+
+                            next_z_for_pi = self.model.communicate(
+                                next_e_value,
+                                action[t + 1],
+                                adj_mask=None,
                             )
-                        )
+                            next_a = self.model.pi(
+                                next_z_for_pi,
+                                self.cfg.min_std,
+                            )
 
-                        if (
-                            train_joint_value
-                            or train_individual_value
-                            or log_values
-                        ):
-                            next_e_target_views = (
-                                next_e_target
-                                .unsqueeze(0)
-                                .expand(N, -1, -1, -1)
-                                .contiguous()
+                            next_z_for_q = (
+                                self.model_target.communicate(
+                                    next_e_value,
+                                    next_a,
+                                    adj_mask=None,
+                                )
+                            )
+                            nq1, nq2 = self.model_target.Q(
+                                next_z_for_q,
+                                next_a,
+                            )
+
+                            next_e_joint = next_e_value
+
+                        else:
+                            next_e_value_views = (
+                                next_e_roll_views.detach()
                             )
 
                             next_z_for_pi_views = (
-                                self.model_target
-                                .communicate_per_agent(
-                                    next_e_target_views,
+                                self.model.communicate_per_agent(
+                                    next_e_value_views,
                                     action[t + 1],
                                     adj_mask_per_agent=(
                                         value_view_adj[t + 1]
@@ -856,10 +680,7 @@ class AsynchMATDMPC:
                             )
                             next_z_for_pi_self = (
                                 next_z_for_pi_views[
-                                    agent_idx,
-                                    :,
-                                    agent_idx,
-                                    :,
+                                    agent_idx, :, agent_idx, :
                                 ].permute(1, 0, 2)
                             )
 
@@ -871,7 +692,7 @@ class AsynchMATDMPC:
                             next_z_for_q_views = (
                                 self.model_target
                                 .communicate_per_agent(
-                                    next_e_target_views,
+                                    next_e_value_views,
                                     next_a,
                                     adj_mask_per_agent=(
                                         value_view_adj[t + 1]
@@ -880,83 +701,98 @@ class AsynchMATDMPC:
                             )
                             next_z_for_q_self = (
                                 next_z_for_q_views[
-                                    agent_idx,
-                                    :,
-                                    agent_idx,
-                                    :,
+                                    agent_idx, :, agent_idx, :
                                 ].permute(1, 0, 2)
                             )
 
-                            nq1, nq2 = (
-                                self.model_target.Q(
-                                    next_z_for_q_self,
-                                    next_a,
+                            nq1, nq2 = self.model_target.Q(
+                                next_z_for_q_self,
+                                next_a,
+                            )
+
+                            next_e_joint = next_e_value_views[
+                                agent_idx, :, agent_idx, :
+                            ].permute(1, 0, 2)
+
+                        if train_individual_value or log_values:
+                            individual_td_target = (
+                                reward[t]
+                                + self.cfg.discount
+                                * torch.min(nq1, nq2)
+                            )
+
+                        if train_joint_value:
+                            nq_joint1, nq_joint2 = (
+                                self.model_target.Q_joint(
+                                    nq1,
+                                    nq2,
+                                    next_e_joint,
                                 )
                             )
 
-                            if train_individual_value or log_values:
-                                individual_td_target = (
-                                    reward[t]
-                                    + self.cfg.discount
-                                    * torch.min(nq1, nq2)
+                            joint_reward = (
+                                reward[t][:, :1]
+                                if reward_type == "global"
+                                else reward[t].sum(
+                                    dim=1,
+                                    keepdim=True,
                                 )
+                            )
 
-                            if train_joint_value:
-                                nq_joint1, nq_joint2 = (
-                                    self.model_target.Q_joint(
-                                        nq1,
-                                        nq2,
-                                        next_e_target,
-                                    )
-                                )
-                                nq_joint = torch.min(
+                            joint_td_target = (
+                                joint_reward
+                                + self.cfg.discount
+                                * torch.min(
                                     nq_joint1,
                                     nq_joint2,
                                 )
+                            )
 
-                                joint_reward = (
-                                    reward[t][:, :1]
-                                    if reward_type == "global"
-                                    else reward[t].sum(
-                                        dim=1,
-                                        keepdim=True,
-                                    )
-                                )
-                                joint_td_target = (
-                                    joint_reward
-                                    + self.cfg.discount
-                                    * nq_joint
-                                )
+                if log_values:
+                    self.diagnostics.values(
+                        t,
+                        q1=q1,
+                        q2=q2,
+                        individual_td_target=individual_td_target,
+                        q_joint1=(
+                            q_joint1
+                            if train_joint_value
+                            else None
+                        ),
+                        q_joint2=(
+                            q_joint2
+                            if train_joint_value
+                            else None
+                        ),
+                        joint_td_target=(
+                            joint_td_target
+                            if train_joint_value
+                            else None
+                        ),
+                    )
 
-                    if log_values:
-                        self.diagnostics.values(
-                            t,
-                            q1=q1,
-                            q2=q2,
-                            individual_td_target=individual_td_target,
-                            q_joint1=(
-                                q_joint1
-                                if train_joint_value
-                                else None
-                            ),
-                            q_joint2=(
-                                q_joint2
-                                if train_joint_value
-                                else None
-                            ),
-                            joint_td_target=(
-                                joint_td_target
-                                if train_joint_value
-                                else None
-                            ),
-                        )
+                # ------------------------------------------------------------
+                # モデル損失
+                # ------------------------------------------------------------
+                if rollout_adj is None:
+                    consistency_loss += rho * h.mse(
+                        next_e_roll,
+                        next_e_observed,
+                        reduce=False,
+                    ).mean(dim=(1, 2))
 
-                    e_roll_views = next_e_roll_views
-                    rho = self.cfg.rho ** t
+                    reward_loss += rho * h.mse(
+                        reward_pred,
+                        reward[t],
+                        reduce=False,
+                    ).mean(dim=1)
 
+                    e_roll = next_e_roll
+
+                else:
                     consistency_raw = h.mse(
                         next_e_roll_views,
-                        next_e_target
+                        next_e_observed
                         .unsqueeze(0)
                         .expand(N, -1, -1, -1),
                         reduce=False,
@@ -1010,60 +846,65 @@ class AsynchMATDMPC:
                             rho * reward_masked.mean(dim=0)
                         )
 
-                    if train_joint_value:
-                        joint_value_loss += rho * (
-                            h.mse(
-                                q_joint1.float(),
-                                joint_td_target.float(),
-                                reduce=False,
-                            )
-                            + h.mse(
-                                q_joint2.float(),
-                                joint_td_target.float(),
-                                reduce=False,
-                            )
-                        ).squeeze(-1)
+                    e_roll_views = next_e_roll_views
 
+                # ------------------------------------------------------------
+                # 価値損失と PER 用誤差
+                # ------------------------------------------------------------
+                if train_joint_value:
+                    joint_value_loss += rho * (
+                        h.mse(
+                            q_joint1.float(),
+                            joint_td_target.float(),
+                            reduce=False,
+                        )
+                        + h.mse(
+                            q_joint2.float(),
+                            joint_td_target.float(),
+                            reduce=False,
+                        )
+                    ).squeeze(-1)
+
+                    priority_loss += rho * (
+                        h.l1(
+                            q_joint1,
+                            joint_td_target,
+                            reduce=False,
+                        )
+                        + h.l1(
+                            q_joint2,
+                            joint_td_target,
+                            reduce=False,
+                        )
+                    ).squeeze(-1)
+
+                if train_individual_value:
+                    individual_value_loss += rho * (
+                        h.mse(
+                            q1.float(),
+                            individual_td_target.float(),
+                            reduce=False,
+                        )
+                        + h.mse(
+                            q2.float(),
+                            individual_td_target.float(),
+                            reduce=False,
+                        )
+                    ).mean(dim=1)
+
+                    if not train_joint_value:
                         priority_loss += rho * (
                             h.l1(
-                                q_joint1,
-                                joint_td_target,
+                                q1,
+                                individual_td_target,
                                 reduce=False,
                             )
                             + h.l1(
-                                q_joint2,
-                                joint_td_target,
-                                reduce=False,
-                            )
-                        ).squeeze(-1)
-
-                    if train_individual_value:
-                        individual_value_loss += rho * (
-                            h.mse(
-                                q1.float(),
-                                individual_td_target.float(),
-                                reduce=False,
-                            )
-                            + h.mse(
-                                q2.float(),
-                                individual_td_target.float(),
+                                q2,
+                                individual_td_target,
                                 reduce=False,
                             )
                         ).mean(dim=1)
-
-                        if not train_joint_value:
-                            priority_loss += rho * (
-                                h.l1(
-                                    q1,
-                                    individual_td_target,
-                                    reduce=False,
-                                )
-                                + h.l1(
-                                    q2,
-                                    individual_td_target,
-                                    reduce=False,
-                                )
-                            ).mean(dim=1)
 
             total_loss = (
                 self.cfg.consistency_coef
@@ -1085,7 +926,6 @@ class AsynchMATDMPC:
 
         weighted_loss.backward()
 
-        # 指定された５グループのみ、クリッピング前の勾配を記録。
         if self.diagnostics is not None:
             self.diagnostics.gradients(
                 self.model,
@@ -1098,39 +938,30 @@ class AsynchMATDMPC:
         )
         self.optim.step()
 
-        # critic optimizer 更新後のパラメータを記録。
         if self.diagnostics is not None:
             self.diagnostics.weights(
                 self.model,
                 self.optim,
             )
 
-        has_priority_signal = (
-            train_joint_value
-            or (
-                rollout_adj is not None
-                and train_individual_value
-            )
-        )
-        if has_priority_signal:
+        if train_joint_value or train_individual_value:
             p_loss = (
                 priority_loss
                 .clamp(max=1e4)
                 .float()
                 .detach()
             )
-            safe_p_loss = torch.nan_to_num(
-                p_loss,
-                nan=1.0,
-            )
             replay_buffer.update_priorities(
                 idxs,
-                safe_p_loss,
+                torch.nan_to_num(
+                    p_loss,
+                    nan=1.0,
+                ),
             )
 
-        # ============================================================
-        # Actor 更新
-        # ============================================================
+        # ------------------------------------------------------------
+        # Actor 更新：実観測 latent ではなく、保存した予測 latent を使用
+        # ------------------------------------------------------------
         self.pi_optim.zero_grad(set_to_none=True)
         self.model.track_q_grad(False)
 
@@ -1139,21 +970,24 @@ class AsynchMATDMPC:
                 device_type=self.device.type,
                 dtype=torch.bfloat16,
             ):
-                pi_loss = 0
+                pi_loss = torch.zeros(
+                    (),
+                    device=self.device,
+                )
 
                 for t in range(H):
                     if rollout_adj is None:
-                        e_real = actor_states[t]
+                        e_pred = actor_states[t]
 
                         z_pre = self.model.communicate(
-                            e_real,
+                            e_pred,
                             action[t],
                             adj_mask=None,
                         )
                         a_t = self.model.pi(z_pre, 0)
 
                         z_eval = self.model.communicate(
-                            e_real,
+                            e_pred,
                             a_t,
                             adj_mask=None,
                         )
@@ -1163,21 +997,18 @@ class AsynchMATDMPC:
                         )
 
                     else:
-                        e_real_views = actor_states[t]
+                        e_pred_views = actor_states[t]
                         mask_t = value_view_adj[t]
 
                         z_pre_views = (
                             self.model.communicate_per_agent(
-                                e_real_views,
+                                e_pred_views,
                                 action[t],
                                 adj_mask_per_agent=mask_t,
                             )
                         )
                         z_pre_self = z_pre_views[
-                            agent_idx,
-                            :,
-                            agent_idx,
-                            :,
+                            agent_idx, :, agent_idx, :
                         ]
 
                         a_self = self.model.pi(
@@ -1188,16 +1019,13 @@ class AsynchMATDMPC:
 
                         z_eval_views = (
                             self.model.communicate_per_agent(
-                                e_real_views,
+                                e_pred_views,
                                 a_t,
                                 adj_mask_per_agent=mask_t,
                             )
                         )
                         z_eval_self = z_eval_views[
-                            agent_idx,
-                            :,
-                            agent_idx,
-                            :,
+                            agent_idx, :, agent_idx, :
                         ].permute(1, 0, 2)
 
                         q1, q2 = self.model.Q(
@@ -1205,12 +1033,13 @@ class AsynchMATDMPC:
                             a_t,
                         )
 
-                    pi_loss += (
-                        -torch.min(q1, q2).mean()
+                    pi_loss = pi_loss - (
+                        torch.min(q1, q2).mean()
                         * (self.cfg.rho ** t)
                     )
 
             pi_loss.backward()
+
             torch.nn.utils.clip_grad_norm_(
                 self.model._pi.parameters(),
                 self.cfg.grad_clip_norm,
@@ -1228,6 +1057,7 @@ class AsynchMATDMPC:
             )
 
         self.model.eval()
+
         return {
             "total_loss": total_loss.mean().detach(),
             "consistency_loss": (

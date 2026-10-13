@@ -86,6 +86,9 @@ python train_prey.py --N 15 --steps 1000000
 
 
 
+テスト
+python eval_main.py --episodes 10 --save_gif --gif_episodes 5
+
 
 
 －MATDMPC

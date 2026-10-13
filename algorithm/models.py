@@ -218,8 +218,16 @@ class MACLM(nn.Module):
         x = torch.cat([z, a], dim=-1)
         return self._Q1(x).squeeze(-1), self._Q2(x).squeeze(-1) # return [B, N]
     
-    def Q_joint(self, qs1, qs2, e):
-        """qs: [B, N], e: [B, N, latent_dim]"""
-        B = e.size(0)
-        global_state = e.view(B, -1)
-        return self._mixing1(qs1, global_state), self._mixing2(qs2, global_state)
+    def Q_joint(self, qs1, qs2, latents):
+        """
+        qs1, qs2: [B, N]
+        latents: [B, N, latent_dim]
+            遷移モデルによる各エージェントの予測 latent。
+            t=0 のみ初期観測から encode した latent。
+        """
+        B = latents.size(0)
+        global_state = latents.reshape(B, -1)
+        return (
+            self._mixing1(qs1, global_state),
+            self._mixing2(qs2, global_state),
+        )
