@@ -565,7 +565,7 @@ class AsynchMATDMPC:
                         q_joint1, q_joint2 = self.model.Q_joint(
                             q1,
                             q2,
-                            z_real,
+                            e_real,
                         )
 
                 # ============================================================
@@ -694,7 +694,7 @@ class AsynchMATDMPC:
                                 self.model_target.Q_joint(
                                     nq1,
                                     nq2,
-                                    next_z_for_q,
+                                    next_e_target,
                                 )
                             )
 

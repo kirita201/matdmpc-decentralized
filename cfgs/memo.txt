@@ -9,7 +9,7 @@ tensorboard --logdir logs
 
 逃げ訓練
 python train_prey.py --N 3 --steps 700000
-python train_prey.py --N 6 --steps 700000
+python train_prey.py --N 6 --steps 1000000
 python train_prey.py --N 15 --steps 1000000
 
 

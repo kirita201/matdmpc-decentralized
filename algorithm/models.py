@@ -222,8 +222,7 @@ class MACLM(nn.Module):
         """
         qs1, qs2: [B, N]
         latents: [B, N, latent_dim]
-            遷移モデルによる各エージェントの予測 latent。
-            t=0 のみ初期観測から encode した latent。
+            latentと書いているが、観測埋め込みのこと
         """
         B = latents.size(0)
         global_state = latents.reshape(B, -1)
