@@ -9,8 +9,8 @@ tensorboard --logdir logs
 
 逃げ訓練
 python train_prey.py --N 3 --steps 700000
-python train_prey.py --N 6 --steps 1000000
-python train_prey.py --N 15 --steps 1000000
+python train_prey.py --N 6 --steps 1500000
+python train_prey.py --N 15 --steps 1500000
 
 
 
@@ -88,7 +88,7 @@ python train_prey.py --N 15 --steps 1000000
 
 テスト
 python eval_main.py --episodes 10 --save_gif --gif_episodes 5
-
+python eval_prey.py --N 3 --episodes 10 --save_gif --gif_episodes 3
 
 
 －MATDMPC

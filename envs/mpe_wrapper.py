@@ -414,6 +414,7 @@ def _make_spread_raw_env(N, obs_range, n_visible_agents, n_visible_landmarks,
                 max_cycles=max_cycles,
                 continuous_actions=continuous_actions,
                 local_ratio=local_ratio,
+                dynamic_rescaling=True,
             )
             self.metadata["name"] = f"spread_N{N}_range{obs_range}"
 
@@ -440,6 +441,7 @@ def _make_predator_prey_raw_env(num_adversaries, num_good, num_obstacles,
                 render_mode=render_mode,
                 max_cycles=max_cycles,
                 continuous_actions=continuous_actions,
+                dynamic_rescaling=True,
             )
             self.metadata["name"] = (
                 f"predprey_N{num_adversaries}_range{obs_range}"
@@ -544,6 +546,9 @@ class MPEWrapper:
             self._init_predprey(cfg)
         else:
             raise ValueError(f"Unknown task: {task}. Choose 'simple_spread' or 'predator_prey'.")
+
+        raw = self.env.unwrapped
+        raw.original_cam_range = float(getattr(cfg, "render_radius_reference", 1.0))
 
         # 観測・行動次元を確認
         self.env.reset()
@@ -744,8 +749,8 @@ class MPEWrapper:
     
     def render(self):
         # Nに応じてマップサイズを取得し、描画範囲(cam_range)をそれに合わせる
-        map_size = {3: 1.0, 6: 2.0, 15: 3.0}.get(self.N, 1.0)
-        self.env.unwrapped.cam_range = map_size + 1.0
+        #map_size = {3: 1.0, 6: 2.0, 15: 3.0}.get(self.N, 1.0)
+        #self.env.unwrapped.cam_range = map_size + 1.0
         return self.env.render()
 
 
