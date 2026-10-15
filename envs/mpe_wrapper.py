@@ -51,7 +51,7 @@ class SpreadScenario(BaseScenario):
         self.n_vis_lm = n_visible_landmarks
         self.obs_type = obs_type
         # マップサイズをNに応じて設定 (3->1.0, 6->2.0, 15->3.0)
-        self.map_size = {3: 1.0, 6: 2.0, 15: 3.0}.get(N, 1.0)
+        self.map_size = {3: 1.0, 6: 1.5, 15: 2.5}.get(N, 1.0)
 
     def make_world(self):
         world = World()
@@ -173,7 +173,7 @@ class PredatorPreyScenario(BaseScenario):
         self.reward_type = reward_type
         self.obs_type = obs_type
         # マップサイズをnum_adversariesに応じて設定 (3->1.0, 6->2.0, 15->3.0)
-        self.map_size = {3: 1.0, 6: 2.0, 15: 3.0}.get(num_adversaries, 1.0)
+        self.map_size = {3: 1.0, 6: 1.5, 15: 2.5}.get(num_adversaries, 1.0)
 
     def make_world(self):
         world = World()
