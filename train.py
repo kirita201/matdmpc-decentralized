@@ -641,7 +641,7 @@ def train():
                     step,
                     log_dir,
                     reward_type,
-                    save_gif=True,
+                    save_gif=cfg.eval_gif,
                 )
                 print(
                     f">>> EVAL at Env steps "
