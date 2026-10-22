@@ -60,23 +60,25 @@ def evaluate(
     save_gif=False,
 ):
     episode_rewards = []
-    frames = []
 
     for ep in range(num_episodes):
         obs, info = env.reset()
         done = False
-        ep_reward = 0
+        ep_reward = 0.0
         t = 0
+        frames = []
 
         while not done:
-            if save_gif and ep == 0:
+            # まずは描画回数と保持画像を減らして安定性を確認
+            if save_gif and ep == 0 and t % 4 == 0:
                 frame = env.render()
-
                 if frame is not None:
                     if isinstance(frame, list):
-                        frames.extend(frame)
+                        frames.extend(
+                            np.ascontiguousarray(f) for f in frame
+                        )
                     else:
-                        frames.append(frame)
+                        frames.append(np.ascontiguousarray(frame))
 
             action = agent.plan(
                 obs,
@@ -89,24 +91,20 @@ def evaluate(
             obs, reward, done, info = env.step(
                 action.cpu().numpy()
             )
-            ep_reward += recorded_reward(
-                reward,
-                reward_type,
-            )
+            ep_reward += recorded_reward(reward, reward_type)
             t += 1
 
         episode_rewards.append(ep_reward)
 
-    if save_gif and frames:
-        gif_path = os.path.join(
-            log_dir,
-            f"eval_step_{step}.gif",
-        )
-        imageio.mimsave(
-            gif_path,
-            frames,
-            fps=15,
-        )
+        # 残り９エピソードを回す前に保存し、画像への参照を解放
+        if save_gif and ep == 0 and frames:
+            gif_path = os.path.join(
+                log_dir,
+                f"eval_step_{step}.gif",
+            )
+            imageio.mimsave(gif_path, frames, fps=4)
+            frames.clear()
+            print(f"GIF saved: {gif_path}", flush=True)
 
     return np.mean(episode_rewards)
 
