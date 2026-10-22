@@ -643,7 +643,7 @@ def train():
                     step,
                     log_dir,
                     reward_type,
-                    save_gif=False,
+                    save_gif=True,
                 )
                 print(
                     f">>> EVAL at Env steps "
