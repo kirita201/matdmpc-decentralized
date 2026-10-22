@@ -76,16 +76,25 @@ def evaluate_main(args):
     out_dir.mkdir(parents=True, exist_ok=True)
 
     episode_rewards = []
+    episode_metrics = {
+        "goals_occupied_now": [],
+        "collisions_now": [],
+        "predator_catch": [],
+    }
     print(f"--- Starting Evaluation for {args.episodes} episodes ---")
 
     for ep in range(args.episodes):
-        # train.pyに合わせて info も受け取るように修正
         obs, info = env.reset()
         done = False
-        ep_reward = 0
+        ep_reward = 0.0
         t = 0
         frames = []
-        
+
+        # キーが存在しない環境では、その指標を集計しない
+        ep_goals = None
+        ep_collisions = None
+        ep_catches = None
+
         while not done:
             if args.save_gif and ep < args.gif_episodes:
                 frame = env.render()
@@ -95,37 +104,87 @@ def evaluate_main(args):
                     else:
                         frames.append(frame)
 
-            # エージェントの位置情報を取得（必要なアルゴリズム用）
-            positions = info.get('agent_positions', None)
+            positions = info.get("agent_positions")
 
-            # 評価モード (eval_mode=True) で行動を計画
-            if algo_type == "mappo":
-                # MAPPOの場合、複数戻り値の可能性を考慮して安全にアクションを取得
-                plan_out = agent.plan(obs, positions=positions, eval_mode=True, step=1000000, t0=(t==0))
-                action = plan_out[0] if isinstance(plan_out, tuple) else plan_out
-            else:
-                action = agent.plan(obs, positions=positions, eval_mode=True, step=1000000, t0=(t==0))
-            
-            # 環境を1ステップ進める
+            plan_out = agent.plan(
+                obs,
+                positions=positions,
+                eval_mode=True,
+                step=1000000,
+                t0=(t == 0),
+            )
+            action = (
+                plan_out[0]
+                if algo_type == "mappo" and isinstance(plan_out, tuple)
+                else plan_out
+            )
+
             obs, reward, done, info = env.step(action.cpu().numpy())
-            ep_reward += np.sum(reward)
-            t += 1
-            
-        episode_rewards.append(ep_reward)
-        print(f"Episode {ep+1:02d}/{args.episodes}: Reward = {ep_reward:.2f}")
 
-        # GIF保存
-        if args.save_gif and ep < args.gif_episodes and len(frames) > 0:
-            gif_path = out_dir / f"main_eval_ep{ep+1}.gif"
+            # train.py の recorded_reward() と同じ扱い
+            rewards = np.asarray(reward)
+            if reward_type == "global":
+                ep_reward += float(rewards.reshape(-1)[0])
+            else:
+                ep_reward += float(rewards.sum())
+
+            if "goals_occupied_now" in info:
+                ep_goals = float(info["goals_occupied_now"])
+
+            if "collisions_now" in info:
+                if ep_collisions is None:
+                    ep_collisions = 0.0
+                ep_collisions += float(info["collisions_now"])
+
+            if "predator_catch" in info:
+                if ep_catches is None:
+                    ep_catches = 0.0
+                ep_catches += float(info["predator_catch"])
+
+            t += 1
+
+        episode_rewards.append(ep_reward)
+
+        metrics_text = []
+        for key, value, label in (
+            ("goals_occupied_now", ep_goals, "Goals (end)"),
+            ("collisions_now", ep_collisions, "Collisions (sum)"),
+            ("predator_catch", ep_catches, "Catches (sum)"),
+        ):
+            if value is not None:
+                episode_metrics[key].append(value)
+                metrics_text.append(f"{label} = {value:.2f}")
+
+        suffix = f", {', '.join(metrics_text)}" if metrics_text else ""
+        print(
+            f"Episode {ep + 1:02d}/{args.episodes}: "
+            f"Reward = {ep_reward:.2f}{suffix}"
+        )
+
+        if args.save_gif and ep < args.gif_episodes and frames:
+            gif_path = out_dir / f"main_eval_ep{ep + 1}.gif"
             imageio.mimsave(gif_path, frames, fps=15)
             print(f"  -> Saved GIF: {gif_path}")
 
-    # 結果の集計
-    mean_reward = np.mean(episode_rewards)
-    std_reward = np.std(episode_rewards)
     print("=" * 50)
     print(f"Evaluation Complete! [{exp_name}]")
-    print(f"Mean Reward: {mean_reward:.2f} ± {std_reward:.2f}")
+    print(
+        f"Mean Reward: {np.mean(episode_rewards):.2f} "
+        f"± {np.std(episode_rewards):.2f}"
+    )
+
+    for key, label in (
+        ("goals_occupied_now", "Mean Goals Occupied (end)"),
+        ("collisions_now", "Mean Collisions (sum)"),
+        ("predator_catch", "Mean Predator Catches (sum)"),
+    ):
+        values = episode_metrics[key]
+        if values:
+            print(
+                f"{label}: {np.mean(values):.2f} "
+                f"({len(values)}/{args.episodes} episodes)"
+            )
+
     print("=" * 50)
 
 if __name__ == "__main__":
