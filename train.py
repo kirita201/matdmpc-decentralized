@@ -70,7 +70,7 @@ def evaluate(
 
         while not done:
             # まずは描画回数と保持画像を減らして安定性を確認
-            if save_gif and ep == 0 and t % 4 == 0:
+            if save_gif and ep == 0:
                 frame = env.render()
                 if frame is not None:
                     if isinstance(frame, list):

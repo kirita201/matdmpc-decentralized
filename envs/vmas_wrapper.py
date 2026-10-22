@@ -85,10 +85,14 @@ class VMASWrapper:
         return obs, rewards, done, info
 
     def render(self):
-        if self.render_mode == "rgb_array":
-            frames = self.env.render(mode="rgb_array")
-            frame = frames[0] if isinstance(frames, list) else frames
-            if frame is not None:
-                frame = frame[::2, ::2, :]  # [H, W, C] の縦横を1つ飛ばしでスライス
-            return frame
-        return None
+        if self.render_mode != "rgb_array":
+            return None
+
+        frames = self.env.render(mode="rgb_array")
+        frame = frames[0] if isinstance(frames, list) else frames
+
+        if frame is None:
+            return None
+
+        # スライスのビューではなく、縮小後の画像だけを保持する
+        return np.ascontiguousarray(frame[::2, ::2, :])
