@@ -40,6 +40,29 @@ class VMASWrapper:
         self.obs_shape = sample_obs.shape[1:]
         self.action_dim = self.env.action_space[0].shape[0] if hasattr(self.env, "action_space") else 2
 
+        # VMASWrapper.__init__ の action_dim 設定付近に追加
+        action_space = self.env.action_space[0]
+
+        self.action_low = torch.as_tensor(
+            action_space.low,
+            dtype=torch.float32,
+            device=self.device,
+        )
+        self.action_high = torch.as_tensor(
+            action_space.high,
+            dtype=torch.float32,
+            device=self.device,
+        )
+
+        if not torch.isfinite(self.action_low).all():
+            raise ValueError("VMAS action_space.low に有限でない値があります")
+        if not torch.isfinite(self.action_high).all():
+            raise ValueError("VMAS action_space.high に有限でない値があります")
+        if torch.any(self.action_high <= self.action_low):
+            raise ValueError("VMAS action_space の上下限が不正です")
+
+        self.action_dim = int(self.action_low.numel())
+
     # 変更点2: データ収集時は環境モデル内での勾配計算を無効化し、メモリと計算時間を節約
     @torch.no_grad()
     def reset(self):
@@ -54,34 +77,50 @@ class VMASWrapper:
         
         return obs, info
 
-    # 変更点2: 同様に step 内の勾配計算を無効化
+        # 変更点2: 同様に step 内の勾配計算を無効化
     @torch.no_grad()
     def step(self, actions):
         # 変更点3: リスト内包表記での個別テンソル生成をやめ、一括変換後に分割（Pythonオーバーヘッド削減）
         # actions は [N, action_dim] の Numpy配列
-        actions_tensor = torch.as_tensor(actions, dtype=torch.float32, device=self.device)
+        actions_tensor = torch.as_tensor(
+            actions,
+            dtype=torch.float32,
+            device=self.device,
+        )
+
+        # 内部行動 [0, 1] を環境の action_space.low〜high に変換する。
+        # 例: 環境の範囲が [-1, 1] の場合、[0, 1] は [-1, 1] に写像される。
+        actions_tensor = actions_tensor.clamp(0.0, 1.0)
+        actions_tensor = (
+            self.action_low
+            + actions_tensor * (self.action_high - self.action_low)
+        )
+
         # unsqueeze(1) で [N, 1, action_dim] にし、list() でラップすると
         # [1, action_dim] のテンソルが N 個入ったリストが瞬時に完成します
         action_list = list(actions_tensor.unsqueeze(1))
-        
+
         obs_list, reward_list, done_tensor, info_list = self.env.step(action_list)
-        
+
         # 変更点4: .cpu() の呼び出しを削除（既にCPU上にあるため不要）
         obs = torch.stack(obs_list, dim=1)[0].numpy()
         rewards = torch.stack(reward_list, dim=1)[0].numpy()
-        
+
         # 変更点5: .numpy().item() ではなく直接 .item() を呼ぶ
         done = done_tensor[0].item()
-        
+
         info = {}
-        positions = torch.stack([a.state.pos for a in self.env.agents], dim=1) 
-        info['agent_positions'] = positions[0].numpy()
-        
-        if hasattr(self.env.scenario, 'get_metrics'):
+        positions = torch.stack(
+            [a.state.pos for a in self.env.agents],
+            dim=1,
+        )
+        info["agent_positions"] = positions[0].numpy()
+
+        if hasattr(self.env.scenario, "get_metrics"):
             metrics = self.env.scenario.get_metrics()
             for k, v in metrics.items():
                 info[k] = v[0].numpy()
-                
+
         return obs, rewards, done, info
 
     def render(self):
