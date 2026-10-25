@@ -223,12 +223,16 @@ class NavigationScenario(BaseScenario):
         goal = self.goals[i]
         
         curr_dist = torch.norm(agent.state.pos - goal.state.pos, dim=-1)
-        reward_dist = self.prev_dists[i] - curr_dist
+        reward_dist = 0.1 * (self.prev_dists[i] - curr_dist)
         self.prev_dists[i] = curr_dist
-        
+
         occupied = curr_dist < self.goal_radius
         self.occupied_goals[:, i] = occupied
-        reward_occ = occupied.float() * 0.05
+        reward_occ = torch.where(
+            occupied,
+            torch.full_like(curr_dist, 0.01),
+            torch.full_like(curr_dist, -0.001),
+        )
         
         collision_penalty = torch.zeros(self.world.batch_dim, device=self.world.device)
         num_cols = torch.zeros(self.world.batch_dim, device=self.world.device, dtype=torch.int32)
