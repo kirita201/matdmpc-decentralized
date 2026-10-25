@@ -231,7 +231,7 @@ class NavigationScenario(BaseScenario):
         reward_occ = torch.where(
             occupied,
             torch.full_like(curr_dist, 0.01),
-            torch.full_like(curr_dist, -0.001),
+            torch.full_like(curr_dist, -0.002),
         )
         
         collision_penalty = torch.zeros(self.world.batch_dim, device=self.world.device)
