@@ -223,7 +223,7 @@ class NavigationScenario(BaseScenario):
         goal = self.goals[i]
         
         curr_dist = torch.norm(agent.state.pos - goal.state.pos, dim=-1)
-        reward_dist = 0.1 * (self.prev_dists[i] - curr_dist)
+        reward_dist = 0.2 * (self.prev_dists[i] - curr_dist)
         self.prev_dists[i] = curr_dist
 
         occupied = curr_dist < self.goal_radius
