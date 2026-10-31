@@ -384,27 +384,35 @@ def train():
                         else None
                     )
 
+
+                    reward_t = torch.as_tensor(
+                        reward,
+                        dtype=torch.float32,
+                        device=agent.device,
+                    ).reshape(-1)
+
+                    if reward_t.numel() == 1:
+                        reward_t = reward_t.expand(cfg.num_agents)
+                    elif reward_t.numel() != cfg.num_agents:
+                        raise ValueError(
+                            "MAPPO reward must contain either "
+                            "one global value or one value per agent."
+                        )
+
                     agent.buffer.store(
-                        torch.tensor(
+                        torch.as_tensor(
                             obs,
                             dtype=torch.float32,
                             device=agent.device,
                         ),
                         action,
                         log_prob,
-                        torch.tensor(
-                            reward,
-                            dtype=torch.float32,
-                            device=agent.device,
-                        ),
+                        reward_t,
                         value,
-                        torch.tensor(
-                            1.0 - float(done),
-                            dtype=torch.float32,
-                            device=agent.device,
-                        ),
                         pos_t,
                     )
+
+            
 
                 else:
                     buffer.add(
@@ -478,44 +486,19 @@ def train():
             # モデル更新
             # --------------------------------------------------------
             if algo_type == "mappo":
-                rollout_length = getattr(
-                    cfg,
-                    "rollout_length",
-                    cfg.episode_length,
+                next_obs_t = torch.as_tensor(
+                    obs,
+                    dtype=torch.float32,
+                    device=agent.device,
                 )
+                loss_info = agent.update(next_obs_t)
 
-                if (
-                    len(agent.buffer.rewards)
-                    >= rollout_length
-                ):
-                    next_obs_t = torch.tensor(
-                        obs,
-                        dtype=torch.float32,
-                        device=agent.device,
+                for name, value in loss_info.items():
+                    writer.add_scalar(
+                        f"Loss/{name}",
+                        value,
+                        episode_tb_step,
                     )
-
-                    next_pos_t = (
-                        torch.tensor(
-                            info["agent_positions"],
-                            dtype=torch.float32,
-                            device=agent.device,
-                        )
-                        if "agent_positions" in info
-                        else None
-                    )
-
-                    loss_info = agent.update(
-                        next_obs_t,
-                        next_pos_t,
-                        float(done),
-                    )
-
-                    for name, value in loss_info.items():
-                        writer.add_scalar(
-                            f"Loss/{name}",
-                            value,
-                            episode_tb_step,
-                        )
 
             elif step >= cfg.seed_steps:
                 num_updates = (
